@@ -93,22 +93,28 @@
                 FacilityCode: formData.get("FacilityCode"),
                 TimeZoneId: formData.get("TimeZoneId"),
                 DefaultRetentionYears: Number(formData.get("DefaultRetentionYears")),
+                Version: formData.get("Version") || null,
                 Reason: formData.get("Reason")
             }),
             "number-sequence": () => ({
                 Prefix: formData.get("Prefix"),
                 NextValue: Number(formData.get("NextValue")),
                 Padding: Number(formData.get("Padding")),
+                Version: formData.get("Version") || null,
                 Reason: formData.get("Reason")
             }),
             "retention-policy": () => ({
                 RetentionYears: Number(formData.get("RetentionYears")),
+                Version: formData.get("Version") || null,
                 Reason: formData.get("Reason")
             }),
             "legal-hold": () => ({
                 Category: formData.get("Category"),
                 EntityType: formData.get("EntityType"),
                 EntityId: formData.get("EntityId"),
+                Reason: formData.get("Reason")
+            }),
+            "release-legal-hold": () => ({
                 Reason: formData.get("Reason")
             })
         };

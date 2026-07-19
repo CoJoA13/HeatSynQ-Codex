@@ -4,6 +4,8 @@
 @using Microsoft.EntityFrameworkCore
 @attribute [Authorize(Policy = "platform.users.view")]
 @inject IDbContextFactory<PlatformDbContext> DbContextFactory
+@inject IAuthorizationService AuthorizationService
+@inject AuthenticationStateProvider AuthenticationStateProvider
 
 <PageTitle>Users &amp; sessions | HeatSynQ</PageTitle>
 <div class="page-heading">
@@ -12,7 +14,9 @@
         <h1>Users &amp; sessions</h1>
         <p>Manage ERP identities, account status, role membership, and active sessions.</p>
     </div>
-    <button class="primary-action" type="button" data-dialog-open="add-user-dialog">+ Add user</button>
+    <AuthorizeView Policy="platform.users.edit">
+        <button class="primary-action" type="button" data-dialog-open="add-user-dialog">+ Add user</button>
+    </AuthorizeView>
 </div>
 <section class="panel data-panel">
     <div class="table-tools">
@@ -60,6 +64,8 @@
                         {
                             @foreach (var permissionOverride in user.Overrides)
                             {
+                                @if (CanOverridePermissions)
+                                {
                                 <button class="override-chip @(permissionOverride.IsAllowed ? "allow" : "deny")"
                                         type="button"
                                         data-dialog-open="override-@permissionOverride.Id">
@@ -98,6 +104,11 @@
                                         </div>
                                     </form>
                                 </dialog>
+                                }
+                                else
+                                {
+                                    <span class="pill">@permissionOverride.PermissionKey</span>
+                                }
                             }
                         }
                     </td>
@@ -107,25 +118,36 @@
                             @(user.IsEnabled ? "Active" : "Disabled")
                         </span>
                     </td>
-                    <td>—</td>
+                    <td>@(user.LastSeenAt?.ToLocalTime().ToString("g") ?? "—")</td>
                     <td>
                         <div class="row-actions">
+                            @if (CanEditUsers)
+                            {
                             <button class="row-action"
                                     type="button"
                                     data-dialog-open="status-@user.Id">
                                 @(user.IsEnabled ? "Disable" : "Restore")
                             </button>
+                            }
+                            @if (CanRevokeSessions)
+                            {
                             <button class="row-action"
                                     type="button"
                                     data-dialog-open="sessions-@user.Id">
                                 Revoke sessions
                             </button>
+                            }
+                            @if (CanOverridePermissions)
+                            {
                             <button class="row-action"
                                     type="button"
                                     data-dialog-open="permission-@user.Id">
                                 Add override
                             </button>
+                            }
                         </div>
+                        @if (CanEditUsers)
+                        {
                         <dialog id="status-@user.Id" class="admin-dialog compact-dialog">
                             <form action="/api/v1/platform/users/@user.Id/status"
                                   method="post"
@@ -152,6 +174,9 @@
                                 </div>
                             </form>
                         </dialog>
+                        }
+                        @if (CanRevokeSessions)
+                        {
                         <dialog id="sessions-@user.Id" class="admin-dialog compact-dialog">
                             <form action="/api/v1/platform/users/@user.Id/revoke-sessions"
                                   method="post"
@@ -175,6 +200,9 @@
                                 </div>
                             </form>
                         </dialog>
+                        }
+                        @if (CanOverridePermissions)
+                        {
                         <dialog id="permission-@user.Id" class="admin-dialog compact-dialog">
                             <form action="/api/v1/platform/users/@user.Id/permission-overrides"
                                   method="post"
@@ -219,6 +247,7 @@
                                 </div>
                             </form>
                         </dialog>
+                        }
                     </td>
                 </tr>
             }
@@ -226,6 +255,7 @@
     </table>
 </section>
 
+<AuthorizeView Policy="platform.users.edit">
 <dialog id="add-user-dialog" class="admin-dialog">
     <form action="/api/v1/platform/users" method="post" data-api-form="create-user">
         <div class="dialog-heading">
@@ -254,6 +284,8 @@
                 <input name="Password" type="password" autocomplete="new-password" minlength="12" required />
             </label>
         </div>
+        @if (CanEditRoles)
+        {
         <fieldset>
             <legend>Roles</legend>
             <div class="choice-grid">
@@ -266,6 +298,7 @@
                 }
             </div>
         </fieldset>
+        }
         <label>
             <span>Reason</span>
             <textarea name="Reason" rows="3" required
@@ -277,13 +310,27 @@
         </div>
     </form>
 </dialog>
+</AuthorizeView>
 
 @code {
     private UserRow[] UserRows { get; set; } = [];
     private string[] RoleOptions { get; set; } = [];
+    private bool CanEditUsers { get; set; }
+    private bool CanRevokeSessions { get; set; }
+    private bool CanOverridePermissions { get; set; }
+    private bool CanEditRoles { get; set; }
 
     protected override async Task OnInitializedAsync()
     {
+        var principal = (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User;
+        CanEditUsers = (await AuthorizationService.AuthorizeAsync(
+            principal, "platform.users.edit")).Succeeded;
+        CanRevokeSessions = (await AuthorizationService.AuthorizeAsync(
+            principal, "platform.sessions.revoke")).Succeeded;
+        CanOverridePermissions = (await AuthorizationService.AuthorizeAsync(
+            principal, "platform.permissions.override")).Succeeded;
+        CanEditRoles = (await AuthorizationService.AuthorizeAsync(
+            principal, "platform.roles.edit")).Succeeded;
         await using var db = await DbContextFactory.CreateDbContextAsync();
         var users = await db.Users
             .AsNoTracking()
@@ -317,6 +364,15 @@
                 .ToArrayAsync())
             .GroupBy(x => x.UserId)
             .ToDictionary(x => x.Key, x => x.ToArray());
+        var lastSeenByUser = await db.Sessions
+            .AsNoTracking()
+            .GroupBy(x => x.UserId)
+            .Select(x => new
+            {
+                UserId = x.Key,
+                LastSeenAt = x.Max(session => session.LastSeenAt)
+            })
+            .ToDictionaryAsync(x => x.UserId, x => (DateTimeOffset?)x.LastSeenAt);
         RoleOptions = await db.Roles
             .AsNoTracking()
             .OrderBy(x => x.Name)
@@ -329,6 +385,7 @@
                 x.Username,
                 x.DisplayName,
                 x.IsEnabled,
+                lastSeenByUser.GetValueOrDefault(x.Id),
                 rolesByUser.GetValueOrDefault(x.Id, []),
                 overridesByUser.GetValueOrDefault(x.Id, [])))
             .ToArray();
@@ -339,6 +396,7 @@
         string Username,
         string DisplayName,
         bool IsEnabled,
+        DateTimeOffset? LastSeenAt,
         string[] Roles,
         OverrideRow[] Overrides);
 

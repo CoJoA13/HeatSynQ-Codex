@@ -1,5 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
+using HeatSynQ.Platform.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HeatSynQ.Web.Tests.Administration;
 
@@ -101,6 +104,47 @@ public sealed class UserAdministrationPageTests
         Assert.Contains(
             "You don’t have permission to open this page.",
             await accessDenied.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task View_only_user_does_not_see_mutation_controls()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var administrator = factory.CreateHttpsClient();
+        using var viewer = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(administrator);
+        var create = await administrator.PostAsJsonAsync("/api/v1/platform/users", new
+        {
+            Username = "user.viewer",
+            Email = "user.viewer@example.test",
+            DisplayName = "User Viewer",
+            Password = "Correct-Horse-Battery-Staple!8",
+            RoleNames = Array.Empty<string>(),
+            Reason = "Read-only administrator"
+        });
+        var user = await create.Content.ReadFromJsonAsync<CreatedUser>();
+        (await administrator.PostAsJsonAsync(
+            $"/api/v1/platform/users/{user!.Id}/permission-overrides",
+            new
+            {
+                PermissionKey = "platform.users.view",
+                Effect = "Allow",
+                Reason = "Read-only user directory"
+            })).EnsureSuccessStatusCode();
+        (await viewer.PostAsJsonAsync("/api/v1/auth/login", new
+        {
+            Username = "user.viewer",
+            Password = "Correct-Horse-Battery-Staple!8",
+            RememberMe = false
+        })).EnsureSuccessStatusCode();
+
+        var html = await viewer.GetStringAsync("/admin/users");
+
+        Assert.DoesNotContain("id=\"add-user-dialog\"", html);
+        Assert.DoesNotContain("data-api-form=\"change-user-status\"", html);
+        Assert.DoesNotContain("data-api-form=\"revoke-user-sessions\"", html);
+        Assert.DoesNotContain("data-api-form=\"create-permission-override\"", html);
+        Assert.DoesNotContain("data-api-form=\"revoke-permission-override\"", html);
     }
 
     private static async Task BootstrapAndLoginAsync(HttpClient client)

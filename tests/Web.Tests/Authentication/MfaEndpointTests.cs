@@ -208,6 +208,93 @@ public sealed class MfaEndpointTests
             (await client.GetAsync("/api/v1/auth/me")).StatusCode);
     }
 
+    [Fact]
+    public async Task Browser_mfa_challenge_supports_recovery_code_login()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient(allowAutoRedirect: false);
+        await BootstrapAndLoginAsync(client);
+        (await client.PostAsync("/api/v1/auth/mfa/authenticator", content: null))
+            .EnsureSuccessStatusCode();
+        var enrollmentCode = await GenerateAuthenticatorCodeAsync(factory.Services, "admin");
+        var enabledResponse = await client.PostAsJsonAsync(
+            "/api/v1/auth/mfa/authenticator/enable",
+            new { Code = enrollmentCode });
+        var enabled = await enabledResponse.Content.ReadFromJsonAsync<MfaEnabled>();
+        (await client.PostAsync("/api/v1/auth/logout", content: null))
+            .EnsureSuccessStatusCode();
+        await PostBrowserFormAsync(
+            client,
+            "/login",
+            "/account/login",
+            new Dictionary<string, string>
+            {
+                ["Username"] = "admin",
+                ["Password"] = "Correct-Horse-Battery-Staple!7"
+            });
+
+        var recoveryPage = await client.GetAsync("/login/2fa/recovery");
+        var html = await recoveryPage.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, recoveryPage.StatusCode);
+        Assert.Contains("action=\"/account/login/2fa/recovery\"", html);
+        var response = await PostBrowserFormAsync(
+            client,
+            "/login/2fa/recovery",
+            "/account/login/2fa/recovery",
+            new Dictionary<string, string>
+            {
+                ["RecoveryCode"] = enabled!.RecoveryCodes[0]
+            });
+
+        Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
+        Assert.Equal("/", response.Headers.Location?.OriginalString);
+    }
+
+    [Fact]
+    public async Task Browser_mfa_preserves_persistent_sign_in_choice()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient(allowAutoRedirect: false);
+        await BootstrapAndLoginAsync(client);
+        (await client.PostAsync("/api/v1/auth/mfa/authenticator", content: null))
+            .EnsureSuccessStatusCode();
+        var enrollmentCode = await GenerateAuthenticatorCodeAsync(factory.Services, "admin");
+        (await client.PostAsJsonAsync(
+            "/api/v1/auth/mfa/authenticator/enable",
+            new { Code = enrollmentCode })).EnsureSuccessStatusCode();
+        (await client.PostAsync("/api/v1/auth/logout", content: null))
+            .EnsureSuccessStatusCode();
+
+        var challenge = await PostBrowserFormAsync(
+            client,
+            "/login",
+            "/account/login",
+            new Dictionary<string, string>
+            {
+                ["Username"] = "admin",
+                ["Password"] = "Correct-Horse-Battery-Staple!7",
+                ["RememberMe"] = "true"
+            });
+
+        Assert.Equal("/login/2fa?rememberMe=true", challenge.Headers.Location?.OriginalString);
+        var page = await client.GetStringAsync(challenge.Headers.Location);
+        Assert.Contains("name=\"RememberMe\" value=\"true\"", page);
+        var loginCode = await GenerateAuthenticatorCodeAsync(factory.Services, "admin");
+        var response = await PostBrowserFormAsync(
+            client,
+            challenge.Headers.Location!.OriginalString,
+            "/account/login/2fa",
+            new Dictionary<string, string>
+            {
+                ["Code"] = loginCode,
+                ["RememberMe"] = "true"
+            });
+
+        Assert.Contains(
+            response.Headers.GetValues("Set-Cookie"),
+            value => value.Contains("expires=", StringComparison.OrdinalIgnoreCase));
+    }
+
     private static async Task<string> GenerateAuthenticatorCodeAsync(
         IServiceProvider services,
         string username)

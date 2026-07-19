@@ -14,6 +14,7 @@
     }
     <form method="post" action="/account/login/2fa">
         <AntiforgeryToken />
+        <input type="hidden" name="RememberMe" value="@(RememberMe ? "true" : "false")" />
         <label>
             <span>Authentication code</span>
             <input name="Code"
@@ -29,10 +30,17 @@
         </label>
         <button type="submit" class="primary-action">Verify</button>
     </form>
-    <small>Use a recovery code if your authenticator is unavailable.</small>
+    <small>
+        <a href="/login/2fa/recovery?rememberMe=@RememberMe.ToString().ToLowerInvariant()">
+            Use a recovery code if your authenticator is unavailable.
+        </a>
+    </small>
 </main>
 
 @code {
     [SupplyParameterFromQuery(Name = "error")]
     public string? Error { get; set; }
+
+    [SupplyParameterFromQuery(Name = "rememberMe")]
+    public bool RememberMe { get; set; }
 }

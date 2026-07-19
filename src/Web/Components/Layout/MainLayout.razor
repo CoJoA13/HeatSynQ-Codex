@@ -12,7 +12,7 @@
                 <button class="icon-button" title="Notifications" aria-label="Notifications">&#9679;</button>
                 <AuthorizeView>
                     <Authorized Context="auth">
-                        <a class="user-chip" href="/security">@auth.User.Identity?.Name</a>
+                        <a class="user-chip" href="/account/security">@auth.User.Identity?.Name</a>
                         <form action="/account/logout" method="post">
                             <AntiforgeryToken />
                             <button type="submit" class="icon-button">Sign out</button>

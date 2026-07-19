@@ -19,6 +19,7 @@
         <form action="/api/v1/platform/settings" method="post"
               data-api-form="facility-settings" data-api-method="PUT">
             <div class="form-error" role="alert" hidden></div>
+            <input type="hidden" name="Version" value="@Settings.Version" />
             <label><span>Company name</span><input name="CompanyName" value="@Settings.CompanyName" required /></label>
             <label><span>Facility name</span><input name="FacilityName" value="@Settings.FacilityName" required /></label>
             <label><span>Facility code</span><input name="FacilityCode" value="@Settings.FacilityCode" maxlength="32" required /></label>
@@ -42,6 +43,7 @@
         <form action="/api/v1/platform/number-sequences/JOB" method="post"
               data-api-form="number-sequence" data-api-method="PUT">
             <div class="form-error" role="alert" hidden></div>
+            <input type="hidden" name="Version" value="@JobSequence?.Version" />
             <label><span>Prefix</span><input name="Prefix" value="J-" /></label>
             <label><span>Next value</span><input name="NextValue" type="number" min="1" value="1001" required /></label>
             <label><span>Padding</span><input name="Padding" type="number" min="1" max="20" value="6" required /></label>
@@ -59,6 +61,7 @@
         <form action="/api/v1/platform/retention-policies/quality" method="post"
               data-api-form="retention-policy" data-api-method="PUT">
             <div class="form-error" role="alert" hidden></div>
+            <input type="hidden" name="Version" value="@QualityRetentionPolicy?.Version" />
             <label><span>Quality retention (years)</span><input name="RetentionYears" type="number" min="1" max="100" value="10" required /></label>
             <label><span>Reason</span><textarea name="Reason" rows="2" required></textarea></label>
             <button type="submit">Save quality policy</button>
@@ -73,7 +76,18 @@
         }
         @foreach (var hold in LegalHolds)
         {
-            <p><b>@hold.Category</b> &middot; @hold.EntityType @hold.EntityId<br /><small>@hold.Reason</small></p>
+            <div class="legal-hold">
+                <p><b>@hold.Category</b> &middot; @hold.EntityType @hold.EntityId<br /><small>@hold.Reason</small></p>
+                <AuthorizeView Policy="platform.settings.edit">
+                    <form action="/api/v1/platform/legal-holds/@hold.Id/release"
+                          method="post"
+                          data-api-form="release-legal-hold">
+                        <div class="form-error" role="alert" hidden></div>
+                        <label><span>Release reason</span><textarea name="Reason" rows="2" required></textarea></label>
+                        <button type="submit">Release hold</button>
+                    </form>
+                </AuthorizeView>
+            </div>
         }
         <form action="/api/v1/platform/legal-holds" method="post" data-api-form="legal-hold">
             <div class="form-error" role="alert" hidden></div>
@@ -98,6 +112,10 @@
     private NumberSequenceRecord[] Sequences { get; set; } = [];
     private RetentionPolicyRecord[] RetentionPolicies { get; set; } = [];
     private LegalHoldRecord[] LegalHolds { get; set; } = [];
+    private NumberSequenceRecord? JobSequence =>
+        Sequences.FirstOrDefault(x => x.Key == "JOB");
+    private RetentionPolicyRecord? QualityRetentionPolicy =>
+        RetentionPolicies.FirstOrDefault(x => x.Category == "quality");
 
     protected override async Task OnInitializedAsync()
     {

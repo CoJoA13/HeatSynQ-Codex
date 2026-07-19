@@ -42,6 +42,10 @@ public static class PlatformIdentityEndpoints
             .AllowAnonymous()
             .RequireRateLimiting("authentication");
 
+        endpoints.MapPost("/account/login/2fa/recovery", BrowserRecoveryCodeLoginAsync)
+            .AllowAnonymous()
+            .RequireRateLimiting("authentication");
+
         endpoints.MapGet("/api/v1/auth/me", CurrentIdentityAsync)
             .RequireAuthorization();
 
@@ -111,6 +115,7 @@ public static class PlatformIdentityEndpoints
                 x.Workstation,
                 x.UserAgent,
                 x.CreatedAt,
+                x.LastSeenAt,
                 x.EndedAt,
                 x.RevokedAt,
                 x.RevokeReason
@@ -150,6 +155,7 @@ public static class PlatformIdentityEndpoints
         PlatformDbContext db,
         UserManager<ApplicationUser> userManager,
         RoleManager<ApplicationRole> roleManager,
+        IAuthorizationService authorizationService,
         CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(request.DisplayName))
@@ -199,6 +205,18 @@ public static class PlatformIdentityEndpoints
             });
         }
 
+        if (roleNames.Length > 0)
+        {
+            var mayAssignRoles = await authorizationService.AuthorizeAsync(
+                httpContext.User,
+                resource: null,
+                "platform.roles.edit");
+            if (!mayAssignRoles.Succeeded)
+            {
+                return Results.Forbid();
+            }
+        }
+
         await using var transaction = db.Database.IsRelational()
             ? await db.Database.BeginTransactionAsync(cancellationToken)
             : null;
@@ -230,7 +248,7 @@ public static class PlatformIdentityEndpoints
             "User",
             user.Id.ToString(),
             actor.Id,
-            httpContext.TraceIdentifier,
+            AuditSessionId(httpContext),
             request.Reason.Trim(),
             "{}",
             JsonSerializer.Serialize(new
@@ -340,7 +358,7 @@ public static class PlatformIdentityEndpoints
             "User",
             user.Id.ToString(),
             actor.Id,
-            httpContext.TraceIdentifier,
+            AuditSessionId(httpContext),
             request.Reason.Trim(),
             beforeJson,
             JsonSerializer.Serialize(new
@@ -413,7 +431,7 @@ public static class PlatformIdentityEndpoints
             "User",
             user.Id.ToString(),
             actor.Id,
-            httpContext.TraceIdentifier,
+            AuditSessionId(httpContext),
             request.Reason.Trim(),
             JsonSerializer.Serialize(new { SessionVersion = previousSessionVersion }),
             JsonSerializer.Serialize(new { user.SessionVersion }),
@@ -586,7 +604,8 @@ public static class PlatformIdentityEndpoints
         }
 
         return result.RequiresTwoFactor
-            ? Results.LocalRedirect("/login/2fa")
+            ? Results.LocalRedirect(
+                rememberMe is true ? "/login/2fa?rememberMe=true" : "/login/2fa")
             : Results.LocalRedirect("/login?error=invalid");
     }
 
@@ -621,6 +640,37 @@ public static class PlatformIdentityEndpoints
         }
 
         return Results.LocalRedirect("/login/2fa?error=invalid");
+    }
+
+    private static async Task<IResult> BrowserRecoveryCodeLoginAsync(
+        [FromForm] string? recoveryCode,
+        [FromForm] bool? rememberMe,
+        HttpContext httpContext,
+        PlatformDbContext db,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var user = await signInManager.GetTwoFactorAuthenticationUserAsync();
+        var result = await signInManager.TwoFactorRecoveryCodeSignInAsync(
+            recoveryCode?.Trim() ?? string.Empty);
+
+        if (result.Succeeded && user is not null)
+        {
+            await RecordAuthenticatedSessionAsync(
+                user,
+                rememberMe ?? false,
+                "recovery-code",
+                httpContext,
+                db,
+                signInManager,
+                timeProvider,
+                cancellationToken);
+            return Results.LocalRedirect("/");
+        }
+
+        var query = rememberMe is true ? "&rememberMe=true" : string.Empty;
+        return Results.LocalRedirect($"/login/2fa/recovery?error=invalid{query}");
     }
 
     private static async Task<IResult> CurrentIdentityAsync(
@@ -683,7 +733,7 @@ public static class PlatformIdentityEndpoints
             "User",
             user.Id.ToString(),
             user.Id,
-            httpContext.TraceIdentifier,
+            AuditSessionId(httpContext),
             "User started authenticator enrollment",
             "{}",
             """{"authenticator":"pending"}""",
@@ -759,7 +809,7 @@ public static class PlatformIdentityEndpoints
             "User",
             user.Id.ToString(),
             user.Id,
-            httpContext.TraceIdentifier,
+            AuditSessionId(httpContext),
             "User enabled authenticator MFA",
             """{"twoFactorEnabled":false}""",
             """{"twoFactorEnabled":true}""",
@@ -826,7 +876,7 @@ public static class PlatformIdentityEndpoints
             "User",
             user.Id.ToString(),
             user.Id,
-            httpContext.TraceIdentifier,
+            AuditSessionId(httpContext),
             "User disabled authenticator MFA",
             """{"twoFactorEnabled":true}""",
             """{"twoFactorEnabled":false}""",
@@ -932,7 +982,7 @@ public static class PlatformIdentityEndpoints
             "User",
             user.Id.ToString(),
             user.Id,
-            httpContext.TraceIdentifier,
+            AuditSessionId(httpContext),
             "User revoked all sessions",
             "{}",
             """{"sessions":"revoked"}""",
@@ -1014,6 +1064,9 @@ public static class PlatformIdentityEndpoints
         Results.Json(
             new { error = "Invalid username or password." },
             statusCode: StatusCodes.Status401Unauthorized);
+
+    private static string AuditSessionId(HttpContext httpContext) =>
+        httpContext.User.FindFirstValue(SessionIdClaim) ?? httpContext.TraceIdentifier;
 
     private static async Task<IResult> BootstrapAdministratorAsync(
         AdministratorBootstrapRequest request,

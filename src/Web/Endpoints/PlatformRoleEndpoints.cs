@@ -1,4 +1,5 @@
 using System.Data;
+using System.Security.Claims;
 using System.Text.Json;
 using HeatSynQ.Platform.Domain.Security;
 using HeatSynQ.Platform.Infrastructure.Persistence;
@@ -11,6 +12,7 @@ namespace HeatSynQ.Web.Endpoints;
 
 public static class PlatformRoleEndpoints
 {
+    private const string SessionIdClaim = "heatsynq:session_id";
     public static IEndpointRouteBuilder MapPlatformRoleEndpoints(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapGet("/api/v1/platform/roles", ListRolesAsync)
@@ -131,7 +133,7 @@ public static class PlatformRoleEndpoints
             "Role",
             role.Id.ToString(),
             actor.Id,
-            httpContext.TraceIdentifier,
+            AuditSessionId(httpContext),
             request.Reason.Trim(),
             JsonSerializer.Serialize(new { PermissionKeys = beforeKeys }),
             JsonSerializer.Serialize(new { PermissionKeys = permissionKeys }),
@@ -196,7 +198,7 @@ public static class PlatformRoleEndpoints
             "Role",
             role.Id.ToString(),
             actor.Id,
-            httpContext.TraceIdentifier,
+            AuditSessionId(httpContext),
             request.Reason!.Trim(),
             "{}",
             JsonSerializer.Serialize(new
@@ -262,6 +264,9 @@ public static class PlatformRoleEndpoints
             .ToDictionary(x => x.Key, x => x.Select(error => error.Description).ToArray());
         return Results.ValidationProblem(errors);
     }
+
+    private static string AuditSessionId(HttpContext httpContext) =>
+        httpContext.User.FindFirstValue(SessionIdClaim) ?? httpContext.TraceIdentifier;
 
     private sealed record CreateRoleRequest(
         string? Name,

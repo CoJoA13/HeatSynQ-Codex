@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Security.Claims;
 using HeatSynQ.Platform.Domain.Security;
 using HeatSynQ.Platform.Infrastructure.Persistence;
 using HeatSynQ.Web.Security;
@@ -11,6 +12,7 @@ namespace HeatSynQ.Web.Endpoints;
 
 public static class PlatformPermissionEndpoints
 {
+    private const string SessionIdClaim = "heatsynq:session_id";
     public static IEndpointRouteBuilder MapPlatformPermissionEndpoints(
         this IEndpointRouteBuilder endpoints)
     {
@@ -84,7 +86,7 @@ public static class PlatformPermissionEndpoints
             "UserPermissionOverride",
             record.Id.ToString(),
             actor.Id,
-            httpContext.TraceIdentifier,
+            AuditSessionId(httpContext),
             request.Reason.Trim(),
             beforeJson,
             "{}",
@@ -166,7 +168,7 @@ public static class PlatformPermissionEndpoints
             "UserPermissionOverride",
             record.Id.ToString(),
             actor.Id,
-            httpContext.TraceIdentifier,
+            AuditSessionId(httpContext),
             record.Reason,
             "{}",
             JsonSerializer.Serialize(new
@@ -197,6 +199,9 @@ public static class PlatformPermissionEndpoints
         string? Effect,
         DateTimeOffset? ExpiresAt,
         string? Reason);
+
+    private static string AuditSessionId(HttpContext httpContext) =>
+        httpContext.User.FindFirstValue(SessionIdClaim) ?? httpContext.TraceIdentifier;
 
     private sealed record AdministrativeReasonRequest(string? Reason);
 }

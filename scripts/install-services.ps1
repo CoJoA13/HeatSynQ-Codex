@@ -7,8 +7,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = [System.IO.Path]::GetFullPath($InstallRoot)
-$webExecutable = Join-Path $root "Web\HeatSynQ.Web.exe"
-$workerExecutable = Join-Path $root "Worker\HeatSynQ.Worker.exe"
+$webExecutable = Join-Path $root "current\Web\HeatSynQ.Web.exe"
+$workerExecutable = Join-Path $root "current\Worker\HeatSynQ.Worker.exe"
 
 foreach ($executable in @($webExecutable, $workerExecutable)) {
     if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {

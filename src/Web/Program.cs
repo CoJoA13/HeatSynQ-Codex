@@ -8,10 +8,13 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.Services.AddWindowsService(options =>
+    options.ServiceName = "HeatSynQ Web");
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.AddDebug();
@@ -55,7 +58,23 @@ builder.Services
 builder.Services.Configure<PasswordHasherOptions>(options =>
     options.IterationCount = 210_000);
 builder.Services.Configure<SecurityStampValidatorOptions>(options =>
-    options.ValidationInterval = TimeSpan.Zero);
+{
+    options.ValidationInterval = TimeSpan.Zero;
+    options.OnRefreshingPrincipal = context =>
+    {
+        const string sessionIdClaim = "heatsynq:session_id";
+        var sessionClaim = context.CurrentPrincipal?.FindFirst(sessionIdClaim);
+        var newPrincipal = context.NewPrincipal;
+        if (sessionClaim is not null &&
+            newPrincipal?.Identity is ClaimsIdentity identity &&
+            !newPrincipal.HasClaim(
+                claim => claim.Type == sessionIdClaim && claim.Value == sessionClaim.Value))
+        {
+            identity.AddClaim(sessionClaim);
+        }
+        return Task.CompletedTask;
+    };
+});
 builder.Services.AddAuthentication(IdentityConstants.ApplicationScheme).AddIdentityCookies();
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.ConfigureApplicationCookie(options =>
@@ -179,6 +198,31 @@ app.Use(async (context, next) =>
 });
 app.UseRateLimiter();
 app.UseAuthentication();
+app.Use(async (context, next) =>
+{
+    const string sessionIdClaim = "heatsynq:session_id";
+    var sessionIdText = context.User.FindFirst(sessionIdClaim)?.Value;
+    if (Guid.TryParse(sessionIdText, out var sessionId))
+    {
+        var dbFactory = context.RequestServices
+            .GetRequiredService<IDbContextFactory<PlatformDbContext>>();
+        await using var db = await dbFactory.CreateDbContextAsync(context.RequestAborted);
+        var session = await db.Sessions.SingleOrDefaultAsync(
+            x => x.Id == sessionId &&
+                 x.EndedAt == null &&
+                 x.RevokedAt == null,
+            context.RequestAborted);
+        var now = context.RequestServices
+            .GetRequiredService<TimeProvider>()
+            .GetUtcNow();
+        if (session is not null && now - session.LastSeenAt >= TimeSpan.FromMinutes(2))
+        {
+            session.LastSeenAt = now;
+            await db.SaveChangesAsync(context.RequestAborted);
+        }
+    }
+    await next();
+});
 app.UseAuthorization();
 app.UseAntiforgery();
 app.MapStaticAssets();

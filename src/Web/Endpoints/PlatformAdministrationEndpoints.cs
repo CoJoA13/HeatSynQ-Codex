@@ -1,5 +1,6 @@
 using System.Data;
 using System.Globalization;
+using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -14,6 +15,10 @@ namespace HeatSynQ.Web.Endpoints;
 
 public static class PlatformAdministrationEndpoints
 {
+    private const string SessionIdClaim = "heatsynq:session_id";
+    private static readonly SemaphoreSlim[] WorkSubmissionLocks =
+        Enumerable.Range(0, 256).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
+
     public static IEndpointRouteBuilder MapPlatformAdministrationEndpoints(
         this IEndpointRouteBuilder endpoints)
     {
@@ -30,7 +35,7 @@ public static class PlatformAdministrationEndpoints
         endpoints.MapPut("/api/v1/platform/number-sequences/{key}", UpdateSequenceAsync)
             .RequireAuthorization(Policy("platform.settings.edit"));
         endpoints.MapPost("/api/v1/platform/number-sequences/{key}/allocate", AllocateNumberAsync)
-            .RequireAuthorization();
+            .RequireAuthorization(Policy("platform.settings.edit"));
         endpoints.MapGet("/api/v1/platform/retention-policies", ListRetentionPoliciesAsync)
             .RequireAuthorization(Policy("platform.settings.view"));
         endpoints.MapPut("/api/v1/platform/retention-policies/{category}", UpdateRetentionPolicyAsync)
@@ -128,16 +133,30 @@ public static class PlatformAdministrationEndpoints
         PlatformDbContext db,
         UserManager<ApplicationUser> userManager,
         TimeProvider timeProvider,
+        IConfiguration configuration,
         string? action,
         Guid? actorUserId,
         DateTimeOffset? from,
         DateTimeOffset? to,
         CancellationToken cancellationToken)
     {
+        var maximumRows = Math.Clamp(
+            configuration.GetValue("Platform:MaxAuditExportRows", 50_000),
+            1,
+            1_000_000);
         var rows = await FilterAudit(db, action, actorUserId, from, to)
             .OrderByDescending(x => x.OccurredAt)
-            .Take(50_000)
+            .Take(maximumRows + 1)
             .ToArrayAsync(cancellationToken);
+        if (rows.Length > maximumRows)
+        {
+            return Results.Json(
+                new
+                {
+                    error = $"The export contains more than {maximumRows:N0} rows; narrow the date range or filters and retry."
+                },
+                statusCode: StatusCodes.Status413PayloadTooLarge);
+        }
         var csv = new StringBuilder("OccurredAt,Action,EntityType,EntityId,ActorUserId,SessionId,Reason\r\n");
         foreach (var row in rows)
         {
@@ -157,7 +176,7 @@ public static class PlatformAdministrationEndpoints
         {
             db.AuditEvents.Add(AuditEvent.Create(
                 "platform.audit.exported", "AuditEvent", "*", actor.Id,
-                httpContext.TraceIdentifier, "Authorized audit export", "{}",
+                AuditSessionId(httpContext), "Authorized audit export", "{}",
                 JsonSerializer.Serialize(new { RowCount = rows.Length, action, actorUserId, from, to }),
                 timeProvider.GetUtcNow()));
             await db.SaveChangesAsync(cancellationToken);
@@ -168,8 +187,13 @@ public static class PlatformAdministrationEndpoints
             $"heatsynq-audit-{timeProvider.GetUtcNow():yyyyMMddHHmmss}.csv");
     }
 
-    private static string Csv(string value) =>
-        $"\"{value.Replace("\"", "\"\"")}\"";
+    private static string Csv(string value)
+    {
+        var safeValue = value.Length > 0 && value[0] is '=' or '+' or '-' or '@'
+            ? $"'{value}"
+            : value;
+        return $"\"{safeValue.Replace("\"", "\"\"")}\"";
+    }
 
     private static async Task<IResult> GetSettingsAsync(
         PlatformDbContext db,
@@ -197,6 +221,11 @@ public static class PlatformAdministrationEndpoints
         var actor = await userManager.GetUserAsync(httpContext.User);
         if (actor is null) return Results.Unauthorized();
         var record = await db.FacilitySettings.SingleOrDefaultAsync(cancellationToken);
+        if (record is not null && request.Version != record.Version)
+            return Results.Conflict(new
+            {
+                error = "This record changed after it was loaded. Refresh and retry your change."
+            });
         var before = record is null ? "{}" : JsonSerializer.Serialize(record);
         record ??= new FacilitySettings { Id = Guid.NewGuid() };
         if (db.Entry(record).State == EntityState.Detached) db.FacilitySettings.Add(record);
@@ -208,7 +237,7 @@ public static class PlatformAdministrationEndpoints
         record.Version = Guid.NewGuid();
         db.AuditEvents.Add(AuditEvent.Create(
             "platform.settings.updated", "FacilitySettings", record.Id.ToString(),
-            actor.Id, httpContext.TraceIdentifier, request.Reason!.Trim(), before,
+            actor.Id, AuditSessionId(httpContext), request.Reason!.Trim(), before,
             JsonSerializer.Serialize(record), timeProvider.GetUtcNow()));
         await db.SaveChangesAsync(cancellationToken);
         return Results.Ok(record);
@@ -253,6 +282,11 @@ public static class PlatformAdministrationEndpoints
         if (actor is null) return Results.Unauthorized();
         key = key.Trim().ToUpperInvariant();
         var record = await db.NumberSequences.FindAsync([key], cancellationToken);
+        if (record is not null && request.Version != record.Version)
+            return Results.Conflict(new
+            {
+                error = "This sequence changed after it was loaded. Refresh and retry your change."
+            });
         var before = record is null ? "{}" : JsonSerializer.Serialize(record);
         record ??= new NumberSequenceRecord { Key = key };
         if (db.Entry(record).State == EntityState.Detached) db.NumberSequences.Add(record);
@@ -262,7 +296,7 @@ public static class PlatformAdministrationEndpoints
         record.Version = Guid.NewGuid();
         db.AuditEvents.Add(AuditEvent.Create(
             "platform.number_sequence.updated", "NumberSequence", key, actor.Id,
-            httpContext.TraceIdentifier, request.Reason.Trim(), before,
+            AuditSessionId(httpContext), request.Reason.Trim(), before,
             JsonSerializer.Serialize(record), timeProvider.GetUtcNow()));
         await db.SaveChangesAsync(cancellationToken);
         return Results.Ok(record);
@@ -311,6 +345,11 @@ public static class PlatformAdministrationEndpoints
         if (actor is null) return Results.Unauthorized();
         category = category.Trim().ToLowerInvariant();
         var record = await db.RetentionPolicies.FindAsync([category], cancellationToken);
+        if (record is not null && request.Version != record.Version)
+            return Results.Conflict(new
+            {
+                error = "This retention policy changed after it was loaded. Refresh and retry your change."
+            });
         var before = record is null ? "{}" : JsonSerializer.Serialize(record);
         record ??= new RetentionPolicyRecord { Category = category };
         if (db.Entry(record).State == EntityState.Detached) db.RetentionPolicies.Add(record);
@@ -318,7 +357,7 @@ public static class PlatformAdministrationEndpoints
         record.Version = Guid.NewGuid();
         db.AuditEvents.Add(AuditEvent.Create(
             "platform.retention_policy.updated", "RetentionPolicy", category, actor.Id,
-            httpContext.TraceIdentifier, request.Reason.Trim(), before,
+            AuditSessionId(httpContext), request.Reason.Trim(), before,
             JsonSerializer.Serialize(record), timeProvider.GetUtcNow()));
         await db.SaveChangesAsync(cancellationToken);
         return Results.Ok(record);
@@ -362,7 +401,7 @@ public static class PlatformAdministrationEndpoints
         db.LegalHolds.Add(record);
         db.AuditEvents.Add(AuditEvent.Create(
             "platform.legal_hold.placed", "LegalHold", record.Id.ToString(), actor.Id,
-            httpContext.TraceIdentifier, record.Reason, "{}",
+            AuditSessionId(httpContext), record.Reason, "{}",
             JsonSerializer.Serialize(record), record.PlacedAt));
         await db.SaveChangesAsync(cancellationToken);
         return Results.Created($"/api/v1/platform/legal-holds/{record.Id}", record);
@@ -391,7 +430,7 @@ public static class PlatformAdministrationEndpoints
         record.Version = Guid.NewGuid();
         db.AuditEvents.Add(AuditEvent.Create(
             "platform.legal_hold.released", "LegalHold", id.ToString(), actor.Id,
-            httpContext.TraceIdentifier, record.ReleaseReason, before,
+            AuditSessionId(httpContext), record.ReleaseReason, before,
             JsonSerializer.Serialize(record), record.ReleasedAt.Value));
         await db.SaveChangesAsync(cancellationToken);
         return Results.NoContent();
@@ -506,7 +545,7 @@ public static class PlatformAdministrationEndpoints
         db.StoredFiles.Add(record);
         db.AuditEvents.Add(AuditEvent.Create(
             "platform.file.uploaded", "StoredFile", id.ToString(), actor.Id,
-            httpContext.TraceIdentifier, reason, "{}",
+            AuditSessionId(httpContext), reason, "{}",
             JsonSerializer.Serialize(new
             {
                 record.Category,
@@ -590,40 +629,68 @@ public static class PlatformAdministrationEndpoints
             {
                 ["work"] = ["An approved message type, JSON payload, and idempotency key are required."]
             });
-        var existing = await db.Outbox.AsNoTracking().SingleOrDefaultAsync(
-            x => x.IdempotencyKey == request.IdempotencyKey.Trim(),
-            cancellationToken);
-        if (existing is not null) return Results.Ok(existing);
-        var actor = await userManager.GetUserAsync(httpContext.User);
-        if (actor is null) return Results.Unauthorized();
-        var now = timeProvider.GetUtcNow();
-        var record = new OutboxRecord
+        var idempotencyKey = request.IdempotencyKey.Trim();
+        var lockIndex = (int)((uint)StringComparer.Ordinal.GetHashCode(idempotencyKey)
+            % WorkSubmissionLocks.Length);
+        var submissionLock = WorkSubmissionLocks[lockIndex];
+        await submissionLock.WaitAsync(cancellationToken);
+        try
         {
-            Id = Guid.NewGuid(),
-            MessageType = request.MessageType,
-            Payload = request.Payload.GetRawText(),
-            IdempotencyKey = request.IdempotencyKey.Trim(),
-            OccurredAt = now,
-            NextAttemptAt = now
-        };
-        db.Outbox.Add(record);
-        db.AuditEvents.Add(AuditEvent.Create(
-            "platform.work.submitted", "OutboxRecord", record.Id.ToString(), actor.Id,
-            httpContext.TraceIdentifier, $"Submitted {record.MessageType}",
-            "{}", JsonSerializer.Serialize(new
+            var existing = await db.Outbox.AsNoTracking().SingleOrDefaultAsync(
+                x => x.IdempotencyKey == idempotencyKey,
+                cancellationToken);
+            if (existing is not null) return Results.Ok(existing);
+            var actor = await userManager.GetUserAsync(httpContext.User);
+            if (actor is null) return Results.Unauthorized();
+            var now = timeProvider.GetUtcNow();
+            var record = new OutboxRecord
             {
-                record.MessageType,
-                record.IdempotencyKey
-            }), now));
-        await db.SaveChangesAsync(cancellationToken);
-        return Results.Accepted($"/api/v1/platform/work/{record.Id}", record);
+                Id = Guid.NewGuid(),
+                MessageType = request.MessageType,
+                Payload = request.Payload.GetRawText(),
+                IdempotencyKey = idempotencyKey,
+                OccurredAt = now,
+                NextAttemptAt = now
+            };
+            db.Outbox.Add(record);
+            db.AuditEvents.Add(AuditEvent.Create(
+                "platform.work.submitted", "OutboxRecord", record.Id.ToString(), actor.Id,
+                AuditSessionId(httpContext), $"Submitted {record.MessageType}",
+                "{}", JsonSerializer.Serialize(new
+                {
+                    record.MessageType,
+                    record.IdempotencyKey
+                }), now));
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException)
+            {
+                db.ChangeTracker.Clear();
+                var winner = await db.Outbox.AsNoTracking().SingleOrDefaultAsync(
+                    x => x.IdempotencyKey == idempotencyKey,
+                    cancellationToken);
+                if (winner is not null) return Results.Ok(winner);
+                throw;
+            }
+            return Results.Accepted($"/api/v1/platform/work/{record.Id}", record);
+        }
+        finally
+        {
+            submissionLock.Release();
+        }
     }
+
+    private static string AuditSessionId(HttpContext httpContext) =>
+        httpContext.User.FindFirstValue(SessionIdClaim) ?? httpContext.TraceIdentifier;
 
     private sealed record FacilitySettingsRequest(
         string? CompanyName, string? FacilityName, string? FacilityCode,
-        string? TimeZoneId, int DefaultRetentionYears, string? Reason);
-    private sealed record NumberSequenceRequest(string? Prefix, long NextValue, int Padding, string? Reason);
-    private sealed record RetentionPolicyRequest(int RetentionYears, string? Reason);
+        string? TimeZoneId, int DefaultRetentionYears, Guid? Version, string? Reason);
+    private sealed record NumberSequenceRequest(
+        string? Prefix, long NextValue, int Padding, Guid? Version, string? Reason);
+    private sealed record RetentionPolicyRequest(int RetentionYears, Guid? Version, string? Reason);
     private sealed record LegalHoldRequest(string? Category, string? EntityType, string? EntityId, string? Reason);
     private sealed record AdministrativeReasonRequest(string? Reason);
     private sealed record QueuedWorkRequest(

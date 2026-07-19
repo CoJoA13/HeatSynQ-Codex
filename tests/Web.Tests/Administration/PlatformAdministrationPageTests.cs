@@ -26,6 +26,29 @@ public sealed class PlatformAdministrationPageTests
         Assert.Contains(expectedHeading, await response.Content.ReadAsStringAsync());
     }
 
+    [Fact]
+    public async Task Facility_page_exposes_release_action_for_active_legal_hold()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(client);
+        var response = await client.PostAsJsonAsync("/api/v1/platform/legal-holds", new
+        {
+            Category = "quality",
+            EntityType = "Job",
+            EntityId = "J-1001",
+            Reason = "Investigation"
+        });
+        var hold = await response.Content.ReadFromJsonAsync<LegalHold>();
+
+        var html = await client.GetStringAsync("/admin/facility");
+
+        Assert.Contains(
+            $"action=\"/api/v1/platform/legal-holds/{hold!.Id}/release\"",
+            html);
+        Assert.Contains("data-api-form=\"release-legal-hold\"", html);
+    }
+
     private static async Task BootstrapAndLoginAsync(HttpClient client)
     {
         (await client.PostAsJsonAsync("/api/v1/platform/bootstrap", new
@@ -43,4 +66,6 @@ public sealed class PlatformAdministrationPageTests
             RememberMe = false
         })).EnsureSuccessStatusCode();
     }
+
+    private sealed record LegalHold(Guid Id);
 }

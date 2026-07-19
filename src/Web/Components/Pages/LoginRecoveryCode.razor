@@ -1,0 +1,40 @@
+@page "/login/2fa/recovery"
+@attribute [AllowAnonymous]
+@layout AnonymousLayout
+
+<PageTitle>Recovery code | HeatSynQ</PageTitle>
+<main class="login-card">
+    <div class="login-brand"><span class="brand-mark">H</span><span>HeatSynQ</span></div>
+    <div class="eyebrow">SECURITY CHECK</div>
+    <h1>Recovery code</h1>
+    <p>Enter one of the recovery codes you saved when authenticator MFA was enabled.</p>
+    @if (Error == "invalid")
+    {
+        <div class="login-error" role="alert">The recovery code is invalid or has already been used.</div>
+    }
+    <form method="post" action="/account/login/2fa/recovery">
+        <AntiforgeryToken />
+        <input type="hidden" name="RememberMe" value="@(RememberMe ? "true" : "false")" />
+        <label>
+            <span>Recovery code</span>
+            <input name="RecoveryCode"
+                   autocomplete="one-time-code"
+                   required
+                   autofocus />
+        </label>
+        <button type="submit" class="primary-action">Sign in</button>
+    </form>
+    <small>
+        <a href="/login/2fa?rememberMe=@RememberMe.ToString().ToLowerInvariant()">
+            Return to authenticator code
+        </a>
+    </small>
+</main>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? Error { get; set; }
+
+    [SupplyParameterFromQuery(Name = "rememberMe")]
+    public bool RememberMe { get; set; }
+}
