@@ -1,13 +1,351 @@
 @page "/admin/users"
-<PageTitle>Users & sessions | HeatSynQ</PageTitle>
+@using HeatSynQ.Platform.Domain.Security
+@using HeatSynQ.Platform.Infrastructure.Persistence
+@using Microsoft.EntityFrameworkCore
+@attribute [Authorize(Policy = "platform.users.view")]
+@inject IDbContextFactory<PlatformDbContext> DbContextFactory
+
+<PageTitle>Users &amp; sessions | HeatSynQ</PageTitle>
 <div class="page-heading">
-    <div><div class="eyebrow">ADMINISTRATION / SECURITY</div><h1>Users &amp; sessions</h1><p>Manage ERP identities, account status, MFA enrollment, and active sessions.</p></div>
-    <button class="primary-action">+ Add user</button>
+    <div>
+        <div class="eyebrow">ADMINISTRATION / SECURITY</div>
+        <h1>Users &amp; sessions</h1>
+        <p>Manage ERP identities, account status, role membership, and active sessions.</p>
+    </div>
+    <button class="primary-action" type="button" data-dialog-open="add-user-dialog">+ Add user</button>
 </div>
 <section class="panel data-panel">
-    <div class="table-tools"><input placeholder="Search users…" aria-label="Search users" /><button>Filters</button></div>
+    <div class="table-tools">
+        <input placeholder="Search users…" aria-label="Search users" />
+        <button>Filters</button>
+    </div>
     <table class="data-table">
-        <thead><tr><th>User</th><th>Username</th><th>Roles</th><th>MFA</th><th>Status</th><th>Last activity</th><th></th></tr></thead>
-        <tbody><tr><td><b>Platform Administrator</b></td><td>admin</td><td><span class="pill">Administrator</span></td><td>Optional</td><td><span class="state active">Active</span></td><td>Current session</td><td><button class="row-action">•••</button></td></tr></tbody>
+        <thead>
+            <tr>
+                <th>User</th>
+                <th>Username</th>
+                <th>Roles</th>
+                <th>Overrides</th>
+                <th>MFA</th>
+                <th>Status</th>
+                <th>Last activity</th>
+                <th><span class="visually-hidden">Actions</span></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var user in UserRows)
+            {
+                <tr>
+                    <td><b>@user.DisplayName</b></td>
+                    <td>@user.Username</td>
+                    <td>
+                        @if (user.Roles.Length == 0)
+                        {
+                            <span class="muted">No roles</span>
+                        }
+                        else
+                        {
+                            @foreach (var role in user.Roles)
+                            {
+                                <span class="pill">@role</span>
+                            }
+                        }
+                    </td>
+                    <td>
+                        @if (user.Overrides.Length == 0)
+                        {
+                            <span class="muted">None</span>
+                        }
+                        else
+                        {
+                            @foreach (var permissionOverride in user.Overrides)
+                            {
+                                <button class="override-chip @(permissionOverride.IsAllowed ? "allow" : "deny")"
+                                        type="button"
+                                        data-dialog-open="override-@permissionOverride.Id">
+                                    @(permissionOverride.IsAllowed ? "Allow" : "Deny") · @permissionOverride.PermissionKey
+                                </button>
+                                <dialog id="override-@permissionOverride.Id" class="admin-dialog compact-dialog">
+                                    <form action="/api/v1/platform/users/@user.Id/permission-overrides/@permissionOverride.Id"
+                                          method="post"
+                                          data-api-form="revoke-permission-override"
+                                          data-api-method="DELETE">
+                                        <div class="dialog-heading">
+                                            <div>
+                                                <div class="eyebrow">ADMINISTRATION / PERMISSIONS</div>
+                                                <h2>Revoke override</h2>
+                                            </div>
+                                            <button type="button" class="dialog-close" data-dialog-close aria-label="Close">×</button>
+                                        </div>
+                                        <dl class="override-summary">
+                                            <dt>User</dt>
+                                            <dd>@user.DisplayName</dd>
+                                            <dt>Permission</dt>
+                                            <dd>@permissionOverride.PermissionKey</dd>
+                                            <dt>Effect</dt>
+                                            <dd>@(permissionOverride.IsAllowed ? "Allow" : "Deny")</dd>
+                                            <dt>Expires</dt>
+                                            <dd>@(permissionOverride.ExpiresAt?.ToLocalTime().ToString("g") ?? "No expiration")</dd>
+                                        </dl>
+                                        <div class="form-error" role="alert" hidden></div>
+                                        <label>
+                                            <span>Reason</span>
+                                            <textarea name="Reason" rows="3" required></textarea>
+                                        </label>
+                                        <div class="dialog-actions">
+                                            <button type="button" data-dialog-close>Cancel</button>
+                                            <button type="submit" class="primary-action">Revoke override</button>
+                                        </div>
+                                    </form>
+                                </dialog>
+                            }
+                        }
+                    </td>
+                    <td>Optional</td>
+                    <td>
+                        <span class="state @(user.IsEnabled ? "active" : "inactive")">
+                            @(user.IsEnabled ? "Active" : "Disabled")
+                        </span>
+                    </td>
+                    <td>—</td>
+                    <td>
+                        <div class="row-actions">
+                            <button class="row-action"
+                                    type="button"
+                                    data-dialog-open="status-@user.Id">
+                                @(user.IsEnabled ? "Disable" : "Restore")
+                            </button>
+                            <button class="row-action"
+                                    type="button"
+                                    data-dialog-open="sessions-@user.Id">
+                                Revoke sessions
+                            </button>
+                            <button class="row-action"
+                                    type="button"
+                                    data-dialog-open="permission-@user.Id">
+                                Add override
+                            </button>
+                        </div>
+                        <dialog id="status-@user.Id" class="admin-dialog compact-dialog">
+                            <form action="/api/v1/platform/users/@user.Id/status"
+                                  method="post"
+                                  data-api-form="change-user-status"
+                                  data-api-method="PUT">
+                                <div class="dialog-heading">
+                                    <div>
+                                        <div class="eyebrow">ADMINISTRATION / USERS</div>
+                                        <h2>@(user.IsEnabled ? "Disable" : "Restore") @user.DisplayName</h2>
+                                    </div>
+                                    <button type="button" class="dialog-close" data-dialog-close aria-label="Close">×</button>
+                                </div>
+                                <div class="form-error" role="alert" hidden></div>
+                                <input type="hidden" name="IsEnabled" value="@(user.IsEnabled ? "false" : "true")" />
+                                <label>
+                                    <span>Reason</span>
+                                    <textarea name="Reason" rows="3" required></textarea>
+                                </label>
+                                <div class="dialog-actions">
+                                    <button type="button" data-dialog-close>Cancel</button>
+                                    <button type="submit" class="primary-action">
+                                        @(user.IsEnabled ? "Disable user" : "Restore user")
+                                    </button>
+                                </div>
+                            </form>
+                        </dialog>
+                        <dialog id="sessions-@user.Id" class="admin-dialog compact-dialog">
+                            <form action="/api/v1/platform/users/@user.Id/revoke-sessions"
+                                  method="post"
+                                  data-api-form="revoke-user-sessions">
+                                <div class="dialog-heading">
+                                    <div>
+                                        <div class="eyebrow">ADMINISTRATION / SESSIONS</div>
+                                        <h2>Revoke sessions for @user.DisplayName</h2>
+                                    </div>
+                                    <button type="button" class="dialog-close" data-dialog-close aria-label="Close">×</button>
+                                </div>
+                                <p>This immediately signs the user out on every workstation and browser.</p>
+                                <div class="form-error" role="alert" hidden></div>
+                                <label>
+                                    <span>Reason</span>
+                                    <textarea name="Reason" rows="3" required></textarea>
+                                </label>
+                                <div class="dialog-actions">
+                                    <button type="button" data-dialog-close>Cancel</button>
+                                    <button type="submit" class="primary-action">Revoke sessions</button>
+                                </div>
+                            </form>
+                        </dialog>
+                        <dialog id="permission-@user.Id" class="admin-dialog compact-dialog">
+                            <form action="/api/v1/platform/users/@user.Id/permission-overrides"
+                                  method="post"
+                                  data-api-form="create-permission-override">
+                                <div class="dialog-heading">
+                                    <div>
+                                        <div class="eyebrow">ADMINISTRATION / PERMISSIONS</div>
+                                        <h2>Add override for @user.DisplayName</h2>
+                                    </div>
+                                    <button type="button" class="dialog-close" data-dialog-close aria-label="Close">×</button>
+                                </div>
+                                <div class="form-error" role="alert" hidden></div>
+                                <label>
+                                    <span>Permission</span>
+                                    <select name="PermissionKey" required>
+                                        @foreach (var permission in PlatformPermissionCatalog.All)
+                                        {
+                                            <option value="@permission.Key">@permission.Key — @permission.Action</option>
+                                        }
+                                    </select>
+                                </label>
+                                <div class="form-grid">
+                                    <label>
+                                        <span>Effect</span>
+                                        <select name="Effect" required>
+                                            <option value="Allow">Allow</option>
+                                            <option value="Deny">Deny</option>
+                                        </select>
+                                    </label>
+                                    <label>
+                                        <span>Expires</span>
+                                        <input type="datetime-local" name="ExpiresAt" />
+                                    </label>
+                                </div>
+                                <label>
+                                    <span>Reason</span>
+                                    <textarea name="Reason" rows="3" required></textarea>
+                                </label>
+                                <div class="dialog-actions">
+                                    <button type="button" data-dialog-close>Cancel</button>
+                                    <button type="submit" class="primary-action">Add override</button>
+                                </div>
+                            </form>
+                        </dialog>
+                    </td>
+                </tr>
+            }
+        </tbody>
     </table>
 </section>
+
+<dialog id="add-user-dialog" class="admin-dialog">
+    <form action="/api/v1/platform/users" method="post" data-api-form="create-user">
+        <div class="dialog-heading">
+            <div>
+                <div class="eyebrow">ADMINISTRATION / USERS</div>
+                <h2>Add user</h2>
+            </div>
+            <button type="button" class="dialog-close" data-dialog-close aria-label="Close">×</button>
+        </div>
+        <div class="form-error" role="alert" hidden></div>
+        <div class="form-grid">
+            <label>
+                <span>Display name</span>
+                <input name="DisplayName" autocomplete="name" required />
+            </label>
+            <label>
+                <span>Username</span>
+                <input name="Username" autocomplete="username" required />
+            </label>
+            <label>
+                <span>Email</span>
+                <input name="Email" type="email" autocomplete="email" required />
+            </label>
+            <label>
+                <span>Temporary password</span>
+                <input name="Password" type="password" autocomplete="new-password" minlength="12" required />
+            </label>
+        </div>
+        <fieldset>
+            <legend>Roles</legend>
+            <div class="choice-grid">
+                @foreach (var role in RoleOptions)
+                {
+                    <label class="choice">
+                        <input name="RoleNames" type="checkbox" value="@role" />
+                        <span>@role</span>
+                    </label>
+                }
+            </div>
+        </fieldset>
+        <label>
+            <span>Reason</span>
+            <textarea name="Reason" rows="3" required
+                      placeholder="Why is this account being created?"></textarea>
+        </label>
+        <div class="dialog-actions">
+            <button type="button" data-dialog-close>Cancel</button>
+            <button type="submit" class="primary-action">Create user</button>
+        </div>
+    </form>
+</dialog>
+
+@code {
+    private UserRow[] UserRows { get; set; } = [];
+    private string[] RoleOptions { get; set; } = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbContextFactory.CreateDbContextAsync();
+        var users = await db.Users
+            .AsNoTracking()
+            .OrderBy(x => x.DisplayName)
+            .Select(x => new
+            {
+                x.Id,
+                Username = x.UserName ?? string.Empty,
+                x.DisplayName,
+                x.IsEnabled
+            })
+            .ToArrayAsync();
+        var roleMemberships = await (
+            from userRole in db.UserRoles.AsNoTracking()
+            join role in db.Roles.AsNoTracking() on userRole.RoleId equals role.Id
+            orderby role.Name
+            select new { userRole.UserId, RoleName = role.Name ?? string.Empty })
+            .ToArrayAsync();
+        var rolesByUser = roleMemberships
+            .GroupBy(x => x.UserId)
+            .ToDictionary(x => x.Key, x => x.Select(role => role.RoleName).ToArray());
+        var overridesByUser = (await db.UserPermissionOverrides
+                .AsNoTracking()
+                .OrderBy(x => x.PermissionKey)
+                .Select(x => new OverrideRow(
+                    x.Id,
+                    x.UserId,
+                    x.PermissionKey,
+                    x.IsAllowed,
+                    x.ExpiresAt))
+                .ToArrayAsync())
+            .GroupBy(x => x.UserId)
+            .ToDictionary(x => x.Key, x => x.ToArray());
+        RoleOptions = await db.Roles
+            .AsNoTracking()
+            .OrderBy(x => x.Name)
+            .Select(x => x.Name ?? string.Empty)
+            .ToArrayAsync();
+
+        UserRows = users
+            .Select(x => new UserRow(
+                x.Id,
+                x.Username,
+                x.DisplayName,
+                x.IsEnabled,
+                rolesByUser.GetValueOrDefault(x.Id, []),
+                overridesByUser.GetValueOrDefault(x.Id, [])))
+            .ToArray();
+    }
+
+    private sealed record UserRow(
+        Guid Id,
+        string Username,
+        string DisplayName,
+        bool IsEnabled,
+        string[] Roles,
+        OverrideRow[] Overrides);
+
+    private sealed record OverrideRow(
+        Guid Id,
+        Guid UserId,
+        string PermissionKey,
+        bool IsAllowed,
+        DateTimeOffset? ExpiresAt);
+}

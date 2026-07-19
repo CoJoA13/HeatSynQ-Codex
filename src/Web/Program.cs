@@ -1,5 +1,9 @@
+using HeatSynQ.Platform.Domain.Security;
 using HeatSynQ.Platform.Infrastructure.Persistence;
 using HeatSynQ.Web.Components;
+using HeatSynQ.Web.Endpoints;
+using HeatSynQ.Web.Security;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
@@ -26,7 +30,7 @@ if (OperatingSystem.IsWindows())
     dataProtection.ProtectKeysWithDpapi();
 }
 
-builder.Services.AddDbContext<PlatformDbContext>(options =>
+builder.Services.AddDbContextFactory<PlatformDbContext>(options =>
     options.UseNpgsql(connectionString, npgsql =>
         npgsql.MigrationsHistoryTable("__migrations", "platform")));
 
@@ -49,8 +53,54 @@ builder.Services
 
 builder.Services.Configure<PasswordHasherOptions>(options =>
     options.IterationCount = 210_000);
+builder.Services.Configure<SecurityStampValidatorOptions>(options =>
+    options.ValidationInterval = TimeSpan.Zero);
 builder.Services.AddAuthentication(IdentityConstants.ApplicationScheme).AddIdentityCookies();
-builder.Services.AddAuthorization();
+builder.Services.AddCascadingAuthenticationState();
+builder.Services.ConfigureApplicationCookie(options =>
+{
+    options.Cookie.Name = "__Host-HeatSynQ";
+    options.Cookie.HttpOnly = true;
+    options.Cookie.SameSite = SameSiteMode.Strict;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.ExpireTimeSpan = TimeSpan.FromMinutes(20);
+    options.SlidingExpiration = true;
+    options.LoginPath = "/login";
+    options.AccessDeniedPath = "/access-denied";
+    options.Events.OnRedirectToLogin = context =>
+    {
+        if (context.Request.Path.StartsWithSegments("/api"))
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            return Task.CompletedTask;
+        }
+
+        context.Response.Redirect(context.RedirectUri);
+        return Task.CompletedTask;
+    };
+    options.Events.OnRedirectToAccessDenied = context =>
+    {
+        if (context.Request.Path.StartsWithSegments("/api"))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            return Task.CompletedTask;
+        }
+
+        context.Response.Redirect(context.RedirectUri);
+        return Task.CompletedTask;
+    };
+});
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddAuthorization(options =>
+{
+    foreach (var permission in PlatformPermissionCatalog.All)
+    {
+        options.AddPolicy(
+            permission.Key,
+            policy => policy.AddRequirements(new PermissionRequirement(permission.Key)));
+    }
+});
+builder.Services.AddScoped<IAuthorizationHandler, PermissionAuthorizationHandler>();
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -75,7 +125,12 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
 }
 
-app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
+app.UseWhen(
+    context => !context.Request.Path.StartsWithSegments("/api")
+        && !context.Request.Path.StartsWithSegments("/account"),
+    branch => branch.UseStatusCodePagesWithReExecute(
+        "/not-found",
+        createScopeForStatusCodePages: true));
 app.UseHttpsRedirection();
 app.UseRateLimiter();
 app.UseAuthentication();
@@ -83,6 +138,9 @@ app.UseAuthorization();
 app.UseAntiforgery();
 app.MapStaticAssets();
 app.MapHealthChecks("/health");
+app.MapPlatformIdentityEndpoints();
+app.MapPlatformPermissionEndpoints();
+app.MapPlatformRoleEndpoints();
 app.MapGet("/api/v1/platform/status", () => Results.Ok(new
 {
     service = "HeatSynQ",

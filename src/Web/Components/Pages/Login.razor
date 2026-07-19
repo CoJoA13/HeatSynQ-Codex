@@ -1,0 +1,31 @@
+@page "/login"
+@attribute [AllowAnonymous]
+@layout AnonymousLayout
+
+<PageTitle>Sign in | HeatSynQ</PageTitle>
+
+<section class="login-card">
+    <div class="login-brand"><span class="brand-mark">H</span><span>HeatSynQ</span></div>
+    <div class="eyebrow">SECURE SHOP MANAGEMENT</div>
+    <h1>Sign in</h1>
+    <p>Use your ERP username and password.</p>
+
+    @if (Error == "invalid")
+    {
+        <div class="login-error" role="alert">Invalid username or password.</div>
+    }
+
+    <form method="post" action="/account/login">
+        <AntiforgeryToken />
+        <label>Username<input name="Username" autocomplete="username" required autofocus /></label>
+        <label>Password<input name="Password" type="password" autocomplete="current-password" required /></label>
+        <label class="remember"><input name="RememberMe" type="checkbox" value="true" /> Keep me signed in</label>
+        <button type="submit" class="primary-action">Sign in</button>
+    </form>
+    <small>Access is logged and limited by your assigned roles and permissions.</small>
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? Error { get; set; }
+}
