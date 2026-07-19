@@ -1,0 +1,25 @@
+@page "/"
+<PageTitle>Platform overview | HeatSynQ</PageTitle>
+
+<div class="page-heading">
+    <div><div class="eyebrow">PLATFORM &amp; ADMINISTRATION</div><h1>System overview</h1><p>Module 1 establishes the secure foundation used by every HeatSynQ workflow.</p></div>
+    <a class="primary-action" href="admin/users">Manage users</a>
+</div>
+<div class="metric-grid">
+    <section class="metric-card"><span>Active users</span><strong>1</strong><small>25-user design target</small></section>
+    <section class="metric-card"><span>Roles configured</span><strong>7</strong><small>Role templates ready</small></section>
+    <section class="metric-card"><span>Queued work</span><strong>0</strong><small>No failed jobs</small></section>
+    <section class="metric-card"><span>System state</span><strong class="healthy">Healthy</strong><small>Database setup pending</small></section>
+</div>
+<div class="dashboard-grid">
+    <section class="panel">
+        <div class="panel-heading"><h2>Platform checklist</h2><span>Module 1</span></div>
+        <ul class="status-list">
+            <li><span class="status-ok">✓</span><div><b>Permission precedence</b><small>Explicit deny → explicit allow → role grant → default deny</small></div></li>
+            <li><span class="status-ok">✓</span><div><b>Append-only auditing</b><small>Immutable event storage with actor, reason, and changes</small></div></li>
+            <li><span class="status-ok">✓</span><div><b>Durable background work</b><small>Idempotent outbox records with retry state</small></div></li>
+            <li><span class="status-progress">…</span><div><b>Production provisioning</b><small>Configure PostgreSQL and create the first administrator</small></div></li>
+        </ul>
+    </section>
+    <section class="panel"><div class="panel-heading"><h2>Security activity</h2><a href="admin/audit">View audit</a></div><div class="empty-state"><span class="empty-icon">◫</span><b>No security events yet</b><p>Account, role, permission, and session changes will appear here.</p></div></section>
+</div>

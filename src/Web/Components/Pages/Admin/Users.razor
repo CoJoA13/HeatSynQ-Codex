@@ -1,0 +1,13 @@
+@page "/admin/users"
+<PageTitle>Users & sessions | HeatSynQ</PageTitle>
+<div class="page-heading">
+    <div><div class="eyebrow">ADMINISTRATION / SECURITY</div><h1>Users &amp; sessions</h1><p>Manage ERP identities, account status, MFA enrollment, and active sessions.</p></div>
+    <button class="primary-action">+ Add user</button>
+</div>
+<section class="panel data-panel">
+    <div class="table-tools"><input placeholder="Search users…" aria-label="Search users" /><button>Filters</button></div>
+    <table class="data-table">
+        <thead><tr><th>User</th><th>Username</th><th>Roles</th><th>MFA</th><th>Status</th><th>Last activity</th><th></th></tr></thead>
+        <tbody><tr><td><b>Platform Administrator</b></td><td>admin</td><td><span class="pill">Administrator</span></td><td>Optional</td><td><span class="state active">Active</span></td><td>Current session</td><td><button class="row-action">•••</button></td></tr></tbody>
+    </table>
+</section>

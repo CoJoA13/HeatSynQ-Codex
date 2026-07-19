@@ -1,0 +1,12 @@
+@page "/admin/system"
+<PageTitle>System health | HeatSynQ</PageTitle>
+<div class="page-heading">
+    <div><div class="eyebrow">ADMINISTRATION / OPERATIONS</div><h1>System health</h1><p>Monitor database, queues, storage, backups, and integrations.</p></div>
+    <a class="primary-action" href="/health">Run health check</a>
+</div>
+<div class="health-grid">
+    <section class="health-card"><span class="health-dot"></span><div><b>Web application</b><small>Running · API v1</small></div></section>
+    <section class="health-card"><span class="health-dot pending"></span><div><b>PostgreSQL</b><small>Requires production connection</small></div></section>
+    <section class="health-card"><span class="health-dot"></span><div><b>Background queue</b><small>0 waiting · 0 failed</small></div></section>
+    <section class="health-card"><span class="health-dot pending"></span><div><b>Off-server backup</b><small>Not configured</small></div></section>
+</div>

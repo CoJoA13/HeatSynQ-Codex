@@ -1,0 +1,26 @@
+<Solution>
+  <Folder Name="/src/" />
+  <Folder Name="/src/Modules/" />
+  <Folder Name="/src/Modules/Platform/" />
+  <Folder Name="/src/Modules/Platform/Domain/">
+    <Project Path="src/Modules/Platform/Domain/HeatSynQ.Platform.Domain.csproj" />
+  </Folder>
+  <Folder Name="/src/Modules/Platform/Infrastructure/">
+    <Project Path="src/Modules/Platform/Infrastructure/HeatSynQ.Platform.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/src/SharedKernel/">
+    <Project Path="src/SharedKernel/HeatSynQ.SharedKernel.csproj" />
+  </Folder>
+  <Folder Name="/src/Web/">
+    <Project Path="src/Web/HeatSynQ.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/" />
+  <Folder Name="/tests/Modules/" />
+  <Folder Name="/tests/Modules/Platform/" />
+  <Folder Name="/tests/Modules/Platform/Domain.Tests/">
+    <Project Path="tests/Modules/Platform/Domain.Tests/HeatSynQ.Platform.Domain.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Modules/Platform/Infrastructure.Tests/">
+    <Project Path="tests/Modules/Platform/Infrastructure.Tests/HeatSynQ.Platform.Infrastructure.Tests.csproj" />
+  </Folder>
+</Solution>
