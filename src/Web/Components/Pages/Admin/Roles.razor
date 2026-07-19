@@ -1,0 +1,34 @@
+@page "/admin/roles"
+<PageTitle>Roles & permissions | HeatSynQ</PageTitle>
+<div class="page-heading">
+    <div><div class="eyebrow">ADMINISTRATION / SECURITY</div><h1>Roles &amp; permissions</h1><p>Role templates provide defaults; user overrides handle documented exceptions.</p></div>
+    <button class="primary-action">+ Add role</button>
+</div>
+<div class="role-layout">
+    <section class="panel role-list">
+        <h2>Role templates</h2>
+        <button class="role selected"><b>Administrator</b><small>All platform permissions</small></button>
+        @foreach (var role in OtherRoles) { <button class="role"><b>@role</b><small>0 users · Future module</small></button> }
+    </section>
+    <section class="panel permission-panel">
+        <div class="panel-heading"><div><h2>Administrator</h2><p>System role · changes require a reason</p></div><button class="primary-action">Save changes</button></div>
+        <h3>Platform &amp; Administration</h3>
+        @foreach (var permission in Permissions)
+        {
+            <label class="permission-row"><input type="checkbox" checked /><span><b>@permission.Key</b><small>@permission.Description</small></span></label>
+        }
+    </section>
+</div>
+@code {
+    private static readonly string[] OtherRoles = ["Sales", "Receiving", "Operator", "Quality", "Shipping", "Billing"];
+    private static readonly (string Key, string Description)[] Permissions =
+    [
+        ("platform.users.view", "View user accounts and active sessions"),
+        ("platform.users.edit", "Create, update, disable, and restore accounts"),
+        ("platform.sessions.revoke", "Revoke another user's active sessions"),
+        ("platform.roles.edit", "Maintain roles and their permission grants"),
+        ("platform.permissions.override", "Create temporary or permanent user overrides"),
+        ("platform.audit.view", "Search and export security audit history"),
+        ("platform.settings.edit", "Change company, facility, and system settings")
+    ];
+}

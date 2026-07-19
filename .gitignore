@@ -1,5 +1,7 @@
 .superpowers/
 .worktrees/
+.dotnet/
+.packages/
 
 **/bin/
 **/obj/

@@ -1,0 +1,17 @@
+@inherits LayoutComponentBase
+
+<div class="page">
+    <div class="sidebar"><NavMenu /></div>
+    <main>
+        <div class="top-row">
+            <div class="global-search"><span aria-hidden="true">⌕</span><input aria-label="Global search" placeholder="Search jobs, loads, POs, parts, heats, serials, or customers…" /></div>
+            <div class="top-actions"><button class="icon-button" title="Notifications" aria-label="Notifications">●</button><span class="user-chip">Platform Admin <span aria-hidden="true">⌄</span></span></div>
+        </div>
+        <article class="content">@Body</article>
+    </main>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    An unexpected error occurred. <a href="." class="reload">Reload</a>
+    <span class="dismiss">🗙</span>
+</div>
