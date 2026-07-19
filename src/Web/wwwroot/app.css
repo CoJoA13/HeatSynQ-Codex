@@ -35,6 +35,7 @@ a, .btn-link {
 .row-actions{display:flex;gap:6px;white-space:nowrap}.compact-dialog{width:min(520px,calc(100% - 32px))}
 .admin-dialog select{width:100%;border:1px solid #aebdc6;border-radius:6px;padding:.7rem;background:white}
 .override-chip{display:block;max-width:240px;overflow:hidden;text-overflow:ellipsis;border:0;border-radius:14px;padding:.25rem .55rem;font-size:.75rem;white-space:nowrap}.override-chip+.override-chip{margin-top:4px}.override-chip.allow{background:#dff1e7;color:#216b4a}.override-chip.deny{background:#f5e4df;color:#8a402b}.override-summary{display:grid;grid-template-columns:auto 1fr;gap:7px 14px;margin:0}.override-summary dt{font-weight:800}.override-summary dd{margin:0}
+.security-panel{display:grid;gap:22px;max-width:760px}.security-status{display:flex;align-items:center;justify-content:space-between;gap:18px}.security-status.enabled{justify-content:flex-start}.security-status h2{margin:0}.security-status p{margin:.3rem 0 0;color:#687983}.security-panel form,.mfa-setup{display:grid;gap:14px}.security-panel label{display:grid;gap:6px;font-weight:700}.security-panel input{max-width:420px;border:1px solid #aebdc6;border-radius:6px;padding:.7rem}.mfa-setup,.recovery-codes{border-top:1px solid #dce4e8;padding-top:18px}.mfa-setup code{display:block;padding:12px;background:#edf2f4;border-radius:6px;overflow-wrap:anywhere}.recovery-codes ol{columns:2;font-family:monospace;font-size:1rem}
 @media(max-width:560px){.form-grid,.choice-grid{grid-template-columns:1fr}}
 
 h1:focus {

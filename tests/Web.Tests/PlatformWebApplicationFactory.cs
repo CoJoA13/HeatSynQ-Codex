@@ -17,6 +17,9 @@ public sealed class PlatformWebApplicationFactory : WebApplicationFactory<Progra
     {
         builder.UseEnvironment("Testing");
         builder.UseSetting("Platform:BootstrapSecret", "test-bootstrap-secret");
+        builder.UseSetting(
+            "Platform:FileStoragePath",
+            Path.Combine(Path.GetTempPath(), "heatsynq-tests", _databaseName));
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<DbContextOptions<PlatformDbContext>>();

@@ -6,6 +6,17 @@
     window.heatSynQAdminWired = true;
 
     document.addEventListener("click", event => {
+        const mfaButton = event.target.closest("[data-mfa-begin]");
+        if (mfaButton) {
+            beginMfaSetup(mfaButton);
+            return;
+        }
+
+        if (event.target.closest("[data-page-reload]")) {
+            window.location.reload();
+            return;
+        }
+
         const openButton = event.target.closest("[data-dialog-open]");
         if (openButton) {
             document.getElementById(openButton.dataset.dialogOpen)?.showModal();
@@ -69,6 +80,36 @@
             },
             "revoke-permission-override": () => ({
                 Reason: formData.get("Reason")
+            }),
+            "enable-mfa": () => ({
+                Code: formData.get("Code")
+            }),
+            "disable-mfa": () => ({
+                CurrentPassword: formData.get("CurrentPassword")
+            }),
+            "facility-settings": () => ({
+                CompanyName: formData.get("CompanyName"),
+                FacilityName: formData.get("FacilityName"),
+                FacilityCode: formData.get("FacilityCode"),
+                TimeZoneId: formData.get("TimeZoneId"),
+                DefaultRetentionYears: Number(formData.get("DefaultRetentionYears")),
+                Reason: formData.get("Reason")
+            }),
+            "number-sequence": () => ({
+                Prefix: formData.get("Prefix"),
+                NextValue: Number(formData.get("NextValue")),
+                Padding: Number(formData.get("Padding")),
+                Reason: formData.get("Reason")
+            }),
+            "retention-policy": () => ({
+                RetentionYears: Number(formData.get("RetentionYears")),
+                Reason: formData.get("Reason")
+            }),
+            "legal-hold": () => ({
+                Category: formData.get("Category"),
+                EntityType: formData.get("EntityType"),
+                EntityId: formData.get("EntityId"),
+                Reason: formData.get("Reason")
             })
         };
         const buildPayload = payloadBuilders[form.dataset.apiForm];
@@ -88,6 +129,20 @@
             });
 
             if (response.ok) {
+                if (form.dataset.apiForm === "enable-mfa") {
+                    const result = await response.json();
+                    const panel = document.querySelector("[data-recovery-codes]");
+                    const list = panel.querySelector("ol");
+                    list.replaceChildren(...result.recoveryCodes.map(code => {
+                        const item = document.createElement("li");
+                        item.textContent = code;
+                        return item;
+                    }));
+                    panel.hidden = false;
+                    form.closest("[data-mfa-setup]").hidden = true;
+                    return;
+                }
+
                 window.location.reload();
                 return;
             }
@@ -106,4 +161,28 @@
             submitButton.disabled = false;
         }
     });
+
+    async function beginMfaSetup(button) {
+        button.disabled = true;
+        try {
+            const response = await fetch("/api/v1/auth/mfa/authenticator", {
+                method: "POST",
+                credentials: "same-origin"
+            });
+            if (!response.ok) {
+                throw new Error("Enrollment could not start.");
+            }
+
+            const enrollment = await response.json();
+            const setup = document.querySelector("[data-mfa-setup]");
+            setup.querySelector("[data-mfa-key]").textContent = enrollment.sharedKey;
+            const authenticatorLink = setup.querySelector("[data-mfa-uri]");
+            authenticatorLink.href = enrollment.authenticatorUri;
+            setup.hidden = false;
+        } catch {
+            button.insertAdjacentText("afterend", " HeatSynQ could not start MFA enrollment.");
+        } finally {
+            button.disabled = false;
+        }
+    }
 })();

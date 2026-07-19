@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using HeatSynQ.Platform.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -39,6 +40,11 @@ public sealed class MfaEndpointTests
             await enableResponse.Content.ReadAsStringAsync());
         var enabled = await enableResponse.Content.ReadFromJsonAsync<MfaEnabled>();
         Assert.Equal(10, enabled!.RecoveryCodes.Length);
+        var statusResponse = await client.GetAsync("/api/v1/auth/mfa");
+        var status = await statusResponse.Content.ReadFromJsonAsync<MfaStatus>();
+        Assert.Equal(HttpStatusCode.OK, statusResponse.StatusCode);
+        Assert.True(status!.IsEnabled);
+        Assert.Equal(10, status.RecoveryCodesRemaining);
         await using (var scope = factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
@@ -71,6 +77,132 @@ public sealed class MfaEndpointTests
             });
 
         Assert.Equal(HttpStatusCode.NoContent, twoFactorResponse.StatusCode);
+        Assert.Equal(
+            HttpStatusCode.OK,
+            (await client.GetAsync("/api/v1/auth/me")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Recovery_code_is_consumed_after_successful_login()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(client);
+        (await client.PostAsync("/api/v1/auth/mfa/authenticator", content: null))
+            .EnsureSuccessStatusCode();
+        var enrollmentCode = await GenerateAuthenticatorCodeAsync(factory.Services, "admin");
+        var enableResponse = await client.PostAsJsonAsync(
+            "/api/v1/auth/mfa/authenticator/enable",
+            new { Code = enrollmentCode });
+        enableResponse.EnsureSuccessStatusCode();
+        var enabled = await enableResponse.Content.ReadFromJsonAsync<MfaEnabled>();
+        var recoveryCode = enabled!.RecoveryCodes[0];
+        (await client.PostAsync("/api/v1/auth/logout", content: null))
+            .EnsureSuccessStatusCode();
+        var challengeResponse = await client.PostAsJsonAsync("/api/v1/auth/login", new
+        {
+            Username = "admin",
+            Password = "Correct-Horse-Battery-Staple!7",
+            RememberMe = false
+        });
+        Assert.Equal(HttpStatusCode.Unauthorized, challengeResponse.StatusCode);
+
+        var firstUse = await client.PostAsJsonAsync(
+            "/api/v1/auth/login/2fa/recovery",
+            new { RecoveryCode = recoveryCode });
+        var secondUse = await client.PostAsJsonAsync(
+            "/api/v1/auth/login/2fa/recovery",
+            new { RecoveryCode = recoveryCode });
+
+        Assert.Equal(HttpStatusCode.NoContent, firstUse.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, secondUse.StatusCode);
+        await using var scope = factory.Services.CreateAsyncScope();
+        var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var user = await userManager.FindByNameAsync("admin");
+        Assert.Equal(9, await userManager.CountRecoveryCodesAsync(user!));
+    }
+
+    [Fact]
+    public async Task Disabling_mfa_requires_current_password_and_restores_password_login()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(client);
+        (await client.PostAsync("/api/v1/auth/mfa/authenticator", content: null))
+            .EnsureSuccessStatusCode();
+        var enrollmentCode = await GenerateAuthenticatorCodeAsync(factory.Services, "admin");
+        (await client.PostAsJsonAsync(
+            "/api/v1/auth/mfa/authenticator/enable",
+            new { Code = enrollmentCode })).EnsureSuccessStatusCode();
+
+        var wrongPassword = await client.PostAsJsonAsync(
+            "/api/v1/auth/mfa/disable",
+            new { CurrentPassword = "not-the-password" });
+        Assert.Equal(HttpStatusCode.BadRequest, wrongPassword.StatusCode);
+        var disableResponse = await client.PostAsJsonAsync(
+            "/api/v1/auth/mfa/disable",
+            new { CurrentPassword = "Correct-Horse-Battery-Staple!7" });
+
+        Assert.Equal(HttpStatusCode.NoContent, disableResponse.StatusCode);
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+            Assert.False((await db.Users.SingleAsync(x => x.UserName == "admin")).TwoFactorEnabled);
+            Assert.Contains(
+                await db.AuditEvents.ToArrayAsync(),
+                x => x.Action == "platform.mfa.disabled");
+        }
+
+        (await client.PostAsync("/api/v1/auth/logout", content: null))
+            .EnsureSuccessStatusCode();
+        var loginResponse = await client.PostAsJsonAsync("/api/v1/auth/login", new
+        {
+            Username = "admin",
+            Password = "Correct-Horse-Battery-Staple!7",
+            RememberMe = false
+        });
+        Assert.Equal(HttpStatusCode.NoContent, loginResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Browser_login_redirects_to_mfa_form_and_accepts_authenticator_code()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient(allowAutoRedirect: false);
+        await BootstrapAndLoginAsync(client);
+        (await client.PostAsync("/api/v1/auth/mfa/authenticator", content: null))
+            .EnsureSuccessStatusCode();
+        var enrollmentCode = await GenerateAuthenticatorCodeAsync(factory.Services, "admin");
+        (await client.PostAsJsonAsync(
+            "/api/v1/auth/mfa/authenticator/enable",
+            new { Code = enrollmentCode })).EnsureSuccessStatusCode();
+        (await client.PostAsync("/api/v1/auth/logout", content: null))
+            .EnsureSuccessStatusCode();
+
+        var passwordResponse = await PostBrowserFormAsync(
+            client,
+            "/login",
+            "/account/login",
+            new Dictionary<string, string>
+            {
+                ["Username"] = "admin",
+                ["Password"] = "Correct-Horse-Battery-Staple!7"
+            });
+
+        Assert.Equal(HttpStatusCode.Redirect, passwordResponse.StatusCode);
+        Assert.Equal("/login/2fa", passwordResponse.Headers.Location?.OriginalString);
+        var loginCode = await GenerateAuthenticatorCodeAsync(factory.Services, "admin");
+        var twoFactorResponse = await PostBrowserFormAsync(
+            client,
+            "/login/2fa",
+            "/account/login/2fa",
+            new Dictionary<string, string>
+            {
+                ["Code"] = loginCode
+            });
+
+        Assert.Equal(HttpStatusCode.Redirect, twoFactorResponse.StatusCode);
+        Assert.Equal("/", twoFactorResponse.Headers.Location?.OriginalString);
         Assert.Equal(
             HttpStatusCode.OK,
             (await client.GetAsync("/api/v1/auth/me")).StatusCode);
@@ -120,6 +252,36 @@ public sealed class MfaEndpointTests
         return output.ToArray();
     }
 
+    private static async Task<HttpResponseMessage> PostBrowserFormAsync(
+        HttpClient client,
+        string formPage,
+        string action,
+        Dictionary<string, string> values)
+    {
+        var page = await client.GetAsync(formPage);
+        page.EnsureSuccessStatusCode();
+        var html = await page.Content.ReadAsStringAsync();
+        var token = Regex.Match(
+            html,
+            "name=\"__RequestVerificationToken\"[^>]*value=\"([^\"]+)\"",
+            RegexOptions.CultureInvariant).Groups[1].Value;
+        Assert.False(string.IsNullOrWhiteSpace(token), html);
+        values["__RequestVerificationToken"] = token;
+        using var request = new HttpRequestMessage(HttpMethod.Post, action)
+        {
+            Content = new FormUrlEncodedContent(values)
+        };
+        if (page.Headers.TryGetValues("Set-Cookie", out var setCookies))
+        {
+            var antiforgeryCookie = setCookies
+                .Single(value => value.Contains("Antiforgery", StringComparison.OrdinalIgnoreCase))
+                .Split(';', 2)[0];
+            request.Headers.Add("Cookie", antiforgeryCookie);
+        }
+
+        return await client.SendAsync(request);
+    }
+
     private static async Task BootstrapAndLoginAsync(HttpClient client)
     {
         (await client.PostAsJsonAsync("/api/v1/platform/bootstrap", new
@@ -144,4 +306,6 @@ public sealed class MfaEndpointTests
     private sealed record MfaEnabled(string[] RecoveryCodes);
 
     private sealed record MfaChallenge(bool RequiresTwoFactor);
+
+    private sealed record MfaStatus(bool IsEnabled, int RecoveryCodesRemaining);
 }

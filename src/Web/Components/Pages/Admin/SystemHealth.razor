@@ -1,12 +1,55 @@
 @page "/admin/system"
+@using Microsoft.Extensions.Diagnostics.HealthChecks
+@attribute [Authorize(Policy = "platform.health.view")]
+@inject HealthCheckService HealthCheckService
+
 <PageTitle>System health | HeatSynQ</PageTitle>
 <div class="page-heading">
-    <div><div class="eyebrow">ADMINISTRATION / OPERATIONS</div><h1>System health</h1><p>Monitor database, queues, storage, backups, and integrations.</p></div>
-    <a class="primary-action" href="/health">Run health check</a>
+    <div>
+        <div class="eyebrow">ADMINISTRATION / OPERATIONS</div>
+        <h1>System health</h1>
+        <p>Monitor database, worker queues, managed storage, backups, and service heartbeat.</p>
+    </div>
+    <a class="primary-action" href="/admin/system">Run health check</a>
 </div>
 <div class="health-grid">
-    <section class="health-card"><span class="health-dot"></span><div><b>Web application</b><small>Running · API v1</small></div></section>
-    <section class="health-card"><span class="health-dot pending"></span><div><b>PostgreSQL</b><small>Requires production connection</small></div></section>
-    <section class="health-card"><span class="health-dot"></span><div><b>Background queue</b><small>0 waiting · 0 failed</small></div></section>
-    <section class="health-card"><span class="health-dot pending"></span><div><b>Off-server backup</b><small>Not configured</small></div></section>
+    <section class="health-card">
+        <span class="health-dot"></span>
+        <div><b>Web application</b><small>Running &middot; API v1</small></div>
+    </section>
+    @foreach (var check in Checks)
+    {
+        <section class="health-card">
+            <span class="health-dot @(check.Status == HealthStatus.Healthy ? "" : "pending")"></span>
+            <div>
+                <b>@DisplayName(check.Name)</b>
+                <small>@check.Status &middot; @check.Description</small>
+            </div>
+        </section>
+    }
 </div>
+
+@code {
+    private CheckRow[] Checks { get; set; } = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var report = await HealthCheckService.CheckHealthAsync();
+        Checks = report.Entries
+            .OrderBy(x => x.Key)
+            .Select(x => new CheckRow(x.Key, x.Value.Status, x.Value.Description ?? "No detail"))
+            .ToArray();
+    }
+
+    private static string DisplayName(string name) => name switch
+    {
+        "platform_database" => "PostgreSQL",
+        "managed_storage" => "Managed file storage",
+        "outbox" => "Background queue",
+        "backup_freshness" => "Encrypted backup",
+        "worker_heartbeat" => "Background worker",
+        _ => name.Replace('_', ' ')
+    };
+
+    private sealed record CheckRow(string Name, HealthStatus Status, string Description);
+}

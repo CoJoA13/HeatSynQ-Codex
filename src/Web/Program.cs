@@ -3,6 +3,7 @@ using HeatSynQ.Platform.Infrastructure.Persistence;
 using HeatSynQ.Web.Components;
 using HeatSynQ.Web.Endpoints;
 using HeatSynQ.Web.Security;
+using HeatSynQ.Web.Health;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.DataProtection;
@@ -59,10 +60,14 @@ builder.Services.AddAuthentication(IdentityConstants.ApplicationScheme).AddIdent
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.ConfigureApplicationCookie(options =>
 {
-    options.Cookie.Name = "__Host-HeatSynQ";
+    options.Cookie.Name = builder.Environment.IsEnvironment("Testing")
+        ? "HeatSynQ.Test"
+        : "__Host-HeatSynQ";
     options.Cookie.HttpOnly = true;
     options.Cookie.SameSite = SameSiteMode.Strict;
-    options.Cookie.SecurePolicy = CookieSecurePolicy.Always;
+    options.Cookie.SecurePolicy = builder.Environment.IsEnvironment("Testing")
+        ? CookieSecurePolicy.SameAsRequest
+        : CookieSecurePolicy.Always;
     options.ExpireTimeSpan = TimeSpan.FromMinutes(20);
     options.SlidingExpiration = true;
     options.LoginPath = "/login";
@@ -114,7 +119,12 @@ builder.Services.AddRateLimiter(options =>
                 QueueLimit = 0
             }));
 });
-builder.Services.AddHealthChecks().AddDbContextCheck<PlatformDbContext>("platform_database");
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<PlatformDbContext>("platform_database")
+    .AddCheck<ManagedStorageHealthCheck>("managed_storage")
+    .AddCheck<OutboxHealthCheck>("outbox")
+    .AddCheck<BackupFreshnessHealthCheck>("backup_freshness")
+    .AddCheck<WorkerHeartbeatHealthCheck>("worker_heartbeat");
 builder.Services.AddRazorComponents().AddInteractiveServerComponents();
 
 var app = builder.Build();
@@ -132,6 +142,41 @@ app.UseWhen(
         "/not-found",
         createScopeForStatusCodePages: true));
 app.UseHttpsRedirection();
+app.Use(async (context, next) =>
+{
+    try
+    {
+        await next();
+    }
+    catch (DbUpdateConcurrencyException) when (!context.Response.HasStarted)
+    {
+        context.Response.StatusCode = StatusCodes.Status409Conflict;
+        await context.Response.WriteAsJsonAsync(new
+        {
+            error = "This record changed after it was loaded. Refresh and retry your change.",
+            traceId = context.TraceIdentifier
+        });
+    }
+});
+app.Use(async (context, next) =>
+{
+    var maintenancePath = Path.GetFullPath(
+        app.Configuration["Platform:MaintenanceFlagPath"]
+        ?? Path.Combine(app.Environment.ContentRootPath, "storage", "maintenance.flag"));
+    if (File.Exists(maintenancePath) &&
+        !context.Request.Path.StartsWithSegments("/health"))
+    {
+        context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+        context.Response.Headers.RetryAfter = "300";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            error = "HeatSynQ is temporarily unavailable for a controlled update.",
+            traceId = context.TraceIdentifier
+        });
+        return;
+    }
+    await next();
+});
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
@@ -141,6 +186,7 @@ app.MapHealthChecks("/health");
 app.MapPlatformIdentityEndpoints();
 app.MapPlatformPermissionEndpoints();
 app.MapPlatformRoleEndpoints();
+app.MapPlatformAdministrationEndpoints();
 app.MapGet("/api/v1/platform/status", () => Results.Ok(new
 {
     service = "HeatSynQ",

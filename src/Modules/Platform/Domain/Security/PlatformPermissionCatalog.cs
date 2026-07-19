@@ -20,6 +20,10 @@ public static class PlatformPermissionCatalog
         new("platform.audit.export", "Platform", "Export audit", "Export security audit history."),
         new("platform.settings.view", "Platform", "View settings", "View company, facility, numbering, and platform settings."),
         new("platform.settings.edit", "Platform", "Edit settings", "Change company, facility, numbering, and platform settings."),
+        new("platform.files.view", "Platform", "View files", "View and download managed attachments and issued documents."),
+        new("platform.files.edit", "Platform", "Manage files", "Upload new managed file revisions and update retention metadata."),
+        new("platform.work.view", "Platform", "View queued work", "View background, notification, and print queue status."),
+        new("platform.work.submit", "Platform", "Submit queued work", "Submit approved notification and print work."),
         new("platform.health.view", "Platform", "View health", "View database, queue, storage, and backup health."),
         new("platform.support.override", "Platform", "Support override", "Perform audited support-only corrective actions.")
     ];

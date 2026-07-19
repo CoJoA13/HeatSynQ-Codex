@@ -1,9 +1,11 @@
 using System.Data;
+using System.Security.Claims;
 using System.Text.Json;
 using HeatSynQ.Platform.Domain.Security;
 using HeatSynQ.Platform.Infrastructure.Persistence;
 using HeatSynQ.Web.Security;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -12,6 +14,8 @@ namespace HeatSynQ.Web.Endpoints;
 
 public static class PlatformIdentityEndpoints
 {
+    private const string SessionIdClaim = "heatsynq:session_id";
+
     public static IEndpointRouteBuilder MapPlatformIdentityEndpoints(this IEndpointRouteBuilder endpoints)
     {
         endpoints.MapPost("/api/v1/platform/bootstrap", BootstrapAdministratorAsync)
@@ -26,7 +30,15 @@ public static class PlatformIdentityEndpoints
             .AllowAnonymous()
             .RequireRateLimiting("authentication");
 
+        endpoints.MapPost("/api/v1/auth/login/2fa/recovery", RecoveryCodeLoginAsync)
+            .AllowAnonymous()
+            .RequireRateLimiting("authentication");
+
         endpoints.MapPost("/account/login", BrowserLoginAsync)
+            .AllowAnonymous()
+            .RequireRateLimiting("authentication");
+
+        endpoints.MapPost("/account/login/2fa", BrowserTwoFactorLoginAsync)
             .AllowAnonymous()
             .RequireRateLimiting("authentication");
 
@@ -36,7 +48,13 @@ public static class PlatformIdentityEndpoints
         endpoints.MapPost("/api/v1/auth/logout", LogoutAsync)
             .RequireAuthorization();
 
+        endpoints.MapPost("/account/logout", BrowserLogoutAsync)
+            .RequireAuthorization();
+
         endpoints.MapPost("/api/v1/auth/revoke-sessions", RevokeOwnSessionsAsync)
+            .RequireAuthorization();
+
+        endpoints.MapGet("/api/v1/auth/mfa", GetMfaStatusAsync)
             .RequireAuthorization();
 
         endpoints.MapPost("/api/v1/auth/mfa/authenticator", BeginAuthenticatorEnrollmentAsync)
@@ -45,6 +63,9 @@ public static class PlatformIdentityEndpoints
         endpoints.MapPost(
                 "/api/v1/auth/mfa/authenticator/enable",
                 EnableAuthenticatorAsync)
+            .RequireAuthorization();
+
+        endpoints.MapPost("/api/v1/auth/mfa/disable", DisableMfaAsync)
             .RequireAuthorization();
 
         endpoints.MapGet("/api/v1/platform/users", ListUsersAsync)
@@ -67,7 +88,35 @@ public static class PlatformIdentityEndpoints
                 .AddRequirements(new PermissionRequirement("platform.sessions.revoke"))
                 .Build());
 
+        endpoints.MapGet("/api/v1/platform/users/{userId:guid}/sessions", ListUserSessionsAsync)
+            .RequireAuthorization(new AuthorizationPolicyBuilder()
+                .AddRequirements(new PermissionRequirement("platform.users.view"))
+                .Build());
+
         return endpoints;
+    }
+
+    private static async Task<IResult> ListUserSessionsAsync(
+        Guid userId,
+        PlatformDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var sessions = await db.Sessions
+            .AsNoTracking()
+            .Where(x => x.UserId == userId)
+            .OrderByDescending(x => x.CreatedAt)
+            .Select(x => new
+            {
+                x.Id,
+                x.Workstation,
+                x.UserAgent,
+                x.CreatedAt,
+                x.EndedAt,
+                x.RevokedAt,
+                x.RevokeReason
+            })
+            .ToArrayAsync(cancellationToken);
+        return Results.Ok(sessions);
     }
 
     private static async Task<IResult> ListUsersAsync(
@@ -275,6 +324,17 @@ public static class PlatformIdentityEndpoints
             return IdentityErrors(updateResult);
         }
 
+        if (!request.IsEnabled)
+        {
+            await RevokeActiveSessionRecordsAsync(
+                user.Id,
+                actor.Id,
+                request.Reason.Trim(),
+                timeProvider.GetUtcNow(),
+                db,
+                cancellationToken);
+        }
+
         db.AuditEvents.Add(AuditEvent.Create(
             request.IsEnabled ? "platform.user.restored" : "platform.user.disabled",
             "User",
@@ -340,6 +400,14 @@ public static class PlatformIdentityEndpoints
             return IdentityErrors(updateResult);
         }
 
+        await RevokeActiveSessionRecordsAsync(
+            user.Id,
+            actor.Id,
+            request.Reason.Trim(),
+            DateTimeOffset.UtcNow,
+            db,
+            cancellationToken);
+
         db.AuditEvents.Add(AuditEvent.Create(
             "platform.sessions.revoked",
             "User",
@@ -362,8 +430,12 @@ public static class PlatformIdentityEndpoints
 
     private static async Task<IResult> LoginAsync(
         LoginRequest request,
+        HttpContext httpContext,
+        PlatformDbContext db,
         UserManager<ApplicationUser> userManager,
-        SignInManager<ApplicationUser> signInManager)
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
     {
         var user = string.IsNullOrWhiteSpace(request.Username)
             ? null
@@ -382,6 +454,15 @@ public static class PlatformIdentityEndpoints
 
         if (result.Succeeded)
         {
+            await RecordAuthenticatedSessionAsync(
+                user,
+                request.RememberMe,
+                "password",
+                httpContext,
+                db,
+                signInManager,
+                timeProvider,
+                cancellationToken);
             return Results.NoContent();
         }
 
@@ -401,27 +482,79 @@ public static class PlatformIdentityEndpoints
 
     private static async Task<IResult> TwoFactorLoginAsync(
         TwoFactorLoginRequest request,
-        SignInManager<ApplicationUser> signInManager)
+        HttpContext httpContext,
+        PlatformDbContext db,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
     {
+        var user = await signInManager.GetTwoFactorAuthenticationUserAsync();
         var code = NormalizeAuthenticatorCode(request.Code);
         var result = await signInManager.TwoFactorAuthenticatorSignInAsync(
             code,
             request.RememberMe,
             request.RememberClient);
 
-        return result.Succeeded
-            ? Results.NoContent()
-            : Results.Json(
-                new { error = "Invalid two-factor authentication code." },
-                statusCode: StatusCodes.Status401Unauthorized);
+        if (result.Succeeded && user is not null)
+        {
+            await RecordAuthenticatedSessionAsync(
+                user,
+                request.RememberMe,
+                "authenticator",
+                httpContext,
+                db,
+                signInManager,
+                timeProvider,
+                cancellationToken);
+            return Results.NoContent();
+        }
+
+        return Results.Json(
+            new { error = "Invalid two-factor authentication code." },
+            statusCode: StatusCodes.Status401Unauthorized);
+    }
+
+    private static async Task<IResult> RecoveryCodeLoginAsync(
+        RecoveryCodeLoginRequest request,
+        HttpContext httpContext,
+        PlatformDbContext db,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var user = await signInManager.GetTwoFactorAuthenticationUserAsync();
+        var result = await signInManager.TwoFactorRecoveryCodeSignInAsync(
+            request.RecoveryCode?.Trim() ?? string.Empty);
+
+        if (result.Succeeded && user is not null)
+        {
+            await RecordAuthenticatedSessionAsync(
+                user,
+                false,
+                "recovery-code",
+                httpContext,
+                db,
+                signInManager,
+                timeProvider,
+                cancellationToken);
+            return Results.NoContent();
+        }
+
+        return Results.Json(
+            new { error = "Invalid recovery code." },
+            statusCode: StatusCodes.Status401Unauthorized);
     }
 
     private static async Task<IResult> BrowserLoginAsync(
         [FromForm] string? username,
         [FromForm] string? password,
         [FromForm] bool? rememberMe,
+        HttpContext httpContext,
+        PlatformDbContext db,
         UserManager<ApplicationUser> userManager,
-        SignInManager<ApplicationUser> signInManager)
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
     {
         var user = string.IsNullOrWhiteSpace(username)
             ? null
@@ -438,9 +571,56 @@ public static class PlatformIdentityEndpoints
             rememberMe ?? false,
             lockoutOnFailure: true);
 
-        return result.Succeeded
-            ? Results.LocalRedirect("/")
+        if (result.Succeeded)
+        {
+            await RecordAuthenticatedSessionAsync(
+                user,
+                rememberMe ?? false,
+                "password",
+                httpContext,
+                db,
+                signInManager,
+                timeProvider,
+                cancellationToken);
+            return Results.LocalRedirect("/");
+        }
+
+        return result.RequiresTwoFactor
+            ? Results.LocalRedirect("/login/2fa")
             : Results.LocalRedirect("/login?error=invalid");
+    }
+
+    private static async Task<IResult> BrowserTwoFactorLoginAsync(
+        [FromForm] string? code,
+        [FromForm] bool? rememberMe,
+        [FromForm] bool? rememberClient,
+        HttpContext httpContext,
+        PlatformDbContext db,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var user = await signInManager.GetTwoFactorAuthenticationUserAsync();
+        var result = await signInManager.TwoFactorAuthenticatorSignInAsync(
+            NormalizeAuthenticatorCode(code),
+            rememberMe ?? false,
+            rememberClient ?? false);
+
+        if (result.Succeeded && user is not null)
+        {
+            await RecordAuthenticatedSessionAsync(
+                user,
+                rememberMe ?? false,
+                "authenticator",
+                httpContext,
+                db,
+                signInManager,
+                timeProvider,
+                cancellationToken);
+            return Results.LocalRedirect("/");
+        }
+
+        return Results.LocalRedirect("/login/2fa?error=invalid");
     }
 
     private static async Task<IResult> CurrentIdentityAsync(
@@ -517,6 +697,23 @@ public static class PlatformIdentityEndpoints
         });
     }
 
+    private static async Task<IResult> GetMfaStatusAsync(
+        HttpContext httpContext,
+        UserManager<ApplicationUser> userManager)
+    {
+        var user = await userManager.GetUserAsync(httpContext.User);
+        if (user is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        return Results.Ok(new
+        {
+            IsEnabled = user.TwoFactorEnabled,
+            RecoveryCodesRemaining = await userManager.CountRecoveryCodesAsync(user)
+        });
+    }
+
     private static async Task<IResult> EnableAuthenticatorAsync(
         EnableAuthenticatorRequest request,
         HttpContext httpContext,
@@ -577,19 +774,135 @@ public static class PlatformIdentityEndpoints
         return Results.Ok(new { RecoveryCodes = recoveryCodes });
     }
 
+    private static async Task<IResult> DisableMfaAsync(
+        DisableMfaRequest request,
+        HttpContext httpContext,
+        PlatformDbContext db,
+        UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var user = await userManager.GetUserAsync(httpContext.User);
+        if (user is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        if (!await userManager.CheckPasswordAsync(
+                user,
+                request.CurrentPassword ?? string.Empty))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["currentPassword"] = ["The current password is invalid."]
+            });
+        }
+
+        if (!user.TwoFactorEnabled)
+        {
+            return Results.NoContent();
+        }
+
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var disableResult = await userManager.SetTwoFactorEnabledAsync(user, false);
+        if (!disableResult.Succeeded)
+        {
+            return IdentityErrors(disableResult);
+        }
+
+        var resetResult = await userManager.ResetAuthenticatorKeyAsync(user);
+        if (!resetResult.Succeeded)
+        {
+            return IdentityErrors(resetResult);
+        }
+
+        await userManager.GenerateNewTwoFactorRecoveryCodesAsync(user, 0);
+        await signInManager.RefreshSignInAsync(user);
+        db.AuditEvents.Add(AuditEvent.Create(
+            "platform.mfa.disabled",
+            "User",
+            user.Id.ToString(),
+            user.Id,
+            httpContext.TraceIdentifier,
+            "User disabled authenticator MFA",
+            """{"twoFactorEnabled":true}""",
+            """{"twoFactorEnabled":false}""",
+            timeProvider.GetUtcNow()));
+        await db.SaveChangesAsync(cancellationToken);
+
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
+
+        return Results.NoContent();
+    }
+
     private static string NormalizeAuthenticatorCode(string? code) =>
         (code ?? string.Empty).Replace(" ", string.Empty).Replace("-", string.Empty);
 
-    private static async Task<IResult> LogoutAsync(SignInManager<ApplicationUser> signInManager)
+    private static async Task<IResult> LogoutAsync(
+        HttpContext httpContext,
+        PlatformDbContext db,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
     {
+        var sessionIdValue = httpContext.User.FindFirstValue(SessionIdClaim);
+        PlatformSessionRecord? session = null;
+        if (Guid.TryParse(sessionIdValue, out var sessionId))
+        {
+            session = await db.Sessions.FindAsync([sessionId], cancellationToken);
+        }
+
+        if (session is null)
+        {
+            var userIdValue = httpContext.User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (Guid.TryParse(userIdValue, out var userId))
+            {
+                session = await db.Sessions
+                    .Where(x => x.UserId == userId &&
+                                x.EndedAt == null &&
+                                x.RevokedAt == null)
+                    .OrderByDescending(x => x.CreatedAt)
+                    .FirstOrDefaultAsync(cancellationToken);
+            }
+        }
+
+        if (session is not null && session.EndedAt is null)
+        {
+            session.EndedAt = timeProvider.GetUtcNow();
+            await db.SaveChangesAsync(cancellationToken);
+        }
+
         await signInManager.SignOutAsync();
         return Results.NoContent();
+    }
+
+    private static async Task<IResult> BrowserLogoutAsync(
+        HttpContext httpContext,
+        PlatformDbContext db,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        await LogoutAsync(
+            httpContext,
+            db,
+            signInManager,
+            timeProvider,
+            cancellationToken);
+        return Results.LocalRedirect("/login");
     }
 
     private static async Task<IResult> RevokeOwnSessionsAsync(
         HttpContext httpContext,
         UserManager<ApplicationUser> userManager,
         PlatformDbContext db,
+        TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
         var user = await userManager.GetUserAsync(httpContext.User);
@@ -606,6 +919,14 @@ public static class PlatformIdentityEndpoints
             return IdentityErrors(result);
         }
 
+        await RevokeActiveSessionRecordsAsync(
+            user.Id,
+            user.Id,
+            "User revoked all sessions",
+            timeProvider.GetUtcNow(),
+            db,
+            cancellationToken);
+
         db.AuditEvents.Add(AuditEvent.Create(
             "platform.sessions.revoked",
             "User",
@@ -615,9 +936,78 @@ public static class PlatformIdentityEndpoints
             "User revoked all sessions",
             "{}",
             """{"sessions":"revoked"}""",
-            DateTimeOffset.UtcNow));
+            timeProvider.GetUtcNow()));
         await db.SaveChangesAsync(cancellationToken);
         return Results.NoContent();
+    }
+
+    private static async Task RecordAuthenticatedSessionAsync(
+        ApplicationUser user,
+        bool isPersistent,
+        string authenticationMethod,
+        HttpContext httpContext,
+        PlatformDbContext db,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var now = timeProvider.GetUtcNow();
+        var session = new PlatformSessionRecord
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            CreatedAt = now,
+            LastSeenAt = now,
+            IpAddress = httpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+            UserAgent = httpContext.Request.Headers.UserAgent.ToString(),
+            Workstation = httpContext.Request.Headers["X-HeatSynQ-Workstation"].ToString(),
+            AuthenticationMethod = authenticationMethod
+        };
+        db.Sessions.Add(session);
+        db.AuditEvents.Add(AuditEvent.Create(
+            "platform.session.started",
+            "Session",
+            session.Id.ToString(),
+            user.Id,
+            session.Id.ToString(),
+            $"Authenticated using {authenticationMethod}",
+            "{}",
+            JsonSerializer.Serialize(new
+            {
+                session.Workstation,
+                session.IpAddress,
+                session.AuthenticationMethod
+            }),
+            now));
+        await db.SaveChangesAsync(cancellationToken);
+        await signInManager.SignInWithClaimsAsync(
+            user,
+            new AuthenticationProperties { IsPersistent = isPersistent },
+            [
+                new Claim(SessionIdClaim, session.Id.ToString()),
+                new Claim("amr", authenticationMethod)
+            ]);
+    }
+
+    private static async Task RevokeActiveSessionRecordsAsync(
+        Guid userId,
+        Guid revokedByUserId,
+        string reason,
+        DateTimeOffset revokedAt,
+        PlatformDbContext db,
+        CancellationToken cancellationToken)
+    {
+        var sessions = await db.Sessions
+            .Where(x => x.UserId == userId &&
+                        x.EndedAt == null &&
+                        x.RevokedAt == null)
+            .ToArrayAsync(cancellationToken);
+        foreach (var session in sessions)
+        {
+            session.RevokedAt = revokedAt;
+            session.RevokedByUserId = revokedByUserId;
+            session.RevokeReason = reason;
+        }
     }
 
     private static IResult InvalidCredentials() =>
@@ -787,7 +1177,11 @@ public static class PlatformIdentityEndpoints
         bool RememberMe,
         bool RememberClient);
 
+    private sealed record RecoveryCodeLoginRequest(string? RecoveryCode);
+
     private sealed record EnableAuthenticatorRequest(string? Code);
+
+    private sealed record DisableMfaRequest(string? CurrentPassword);
 
     private sealed record CreateUserRequest(
         string? Username,

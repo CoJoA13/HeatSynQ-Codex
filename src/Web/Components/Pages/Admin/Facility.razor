@@ -1,0 +1,113 @@
+@page "/admin/facility"
+@using HeatSynQ.Platform.Infrastructure.Persistence
+@using Microsoft.EntityFrameworkCore
+@attribute [Authorize(Policy = "platform.settings.view")]
+@inject IDbContextFactory<PlatformDbContext> DbContextFactory
+
+<PageTitle>Company &amp; facility | HeatSynQ</PageTitle>
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">ADMINISTRATION / CONFIGURATION</div>
+        <h1>Company &amp; facility</h1>
+        <p>Control facility identity, record retention, numbering, and legal holds.</p>
+    </div>
+</div>
+
+<div class="admin-card-grid">
+    <section class="panel">
+        <h2>Facility settings</h2>
+        <form action="/api/v1/platform/settings" method="post"
+              data-api-form="facility-settings" data-api-method="PUT">
+            <div class="form-error" role="alert" hidden></div>
+            <label><span>Company name</span><input name="CompanyName" value="@Settings.CompanyName" required /></label>
+            <label><span>Facility name</span><input name="FacilityName" value="@Settings.FacilityName" required /></label>
+            <label><span>Facility code</span><input name="FacilityCode" value="@Settings.FacilityCode" maxlength="32" required /></label>
+            <label><span>Time zone</span><input name="TimeZoneId" value="@Settings.TimeZoneId" required /></label>
+            <label><span>Default retention (years)</span><input name="DefaultRetentionYears" type="number" min="1" max="100" value="@Settings.DefaultRetentionYears" required /></label>
+            <label><span>Reason</span><textarea name="Reason" rows="2" required></textarea></label>
+            <button type="submit" class="primary-action">Save settings</button>
+        </form>
+    </section>
+
+    <section class="panel">
+        <h2>Number sequences</h2>
+        @if (Sequences.Length == 0)
+        {
+            <p class="muted">No sequences are configured. Add the first controlled sequence below.</p>
+        }
+        @foreach (var sequence in Sequences)
+        {
+            <p><b>@sequence.Key</b> &middot; next @sequence.Prefix@sequence.NextValue.ToString($"D{sequence.Padding}")</p>
+        }
+        <form action="/api/v1/platform/number-sequences/JOB" method="post"
+              data-api-form="number-sequence" data-api-method="PUT">
+            <div class="form-error" role="alert" hidden></div>
+            <label><span>Prefix</span><input name="Prefix" value="J-" /></label>
+            <label><span>Next value</span><input name="NextValue" type="number" min="1" value="1001" required /></label>
+            <label><span>Padding</span><input name="Padding" type="number" min="1" max="20" value="6" required /></label>
+            <label><span>Reason</span><textarea name="Reason" rows="2" required></textarea></label>
+            <button type="submit">Configure JOB sequence</button>
+        </form>
+    </section>
+
+    <section class="panel">
+        <h2>Retention policies</h2>
+        @foreach (var policy in RetentionPolicies)
+        {
+            <p><b>@policy.Category</b> &middot; @policy.RetentionYears years</p>
+        }
+        <form action="/api/v1/platform/retention-policies/quality" method="post"
+              data-api-form="retention-policy" data-api-method="PUT">
+            <div class="form-error" role="alert" hidden></div>
+            <label><span>Quality retention (years)</span><input name="RetentionYears" type="number" min="1" max="100" value="10" required /></label>
+            <label><span>Reason</span><textarea name="Reason" rows="2" required></textarea></label>
+            <button type="submit">Save quality policy</button>
+        </form>
+    </section>
+
+    <section class="panel">
+        <h2>Active legal holds</h2>
+        @if (LegalHolds.Length == 0)
+        {
+            <p class="muted">No active legal holds.</p>
+        }
+        @foreach (var hold in LegalHolds)
+        {
+            <p><b>@hold.Category</b> &middot; @hold.EntityType @hold.EntityId<br /><small>@hold.Reason</small></p>
+        }
+        <form action="/api/v1/platform/legal-holds" method="post" data-api-form="legal-hold">
+            <div class="form-error" role="alert" hidden></div>
+            <label><span>Category</span><input name="Category" required /></label>
+            <label><span>Entity type</span><input name="EntityType" /></label>
+            <label><span>Entity ID</span><input name="EntityId" /></label>
+            <label><span>Reason</span><textarea name="Reason" rows="2" required></textarea></label>
+            <button type="submit">Place legal hold</button>
+        </form>
+    </section>
+</div>
+
+@code {
+    private FacilitySettings Settings { get; set; } = new()
+    {
+        CompanyName = "HeatSynQ",
+        FacilityName = "Main Facility",
+        FacilityCode = "MAIN",
+        TimeZoneId = "America/Chicago",
+        DefaultRetentionYears = 10
+    };
+    private NumberSequenceRecord[] Sequences { get; set; } = [];
+    private RetentionPolicyRecord[] RetentionPolicies { get; set; } = [];
+    private LegalHoldRecord[] LegalHolds { get; set; } = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbContextFactory.CreateDbContextAsync();
+        Settings = await db.FacilitySettings.AsNoTracking().SingleOrDefaultAsync() ?? Settings;
+        Sequences = await db.NumberSequences.AsNoTracking().OrderBy(x => x.Key).ToArrayAsync();
+        RetentionPolicies = await db.RetentionPolicies.AsNoTracking().OrderBy(x => x.Category).ToArrayAsync();
+        LegalHolds = await db.LegalHolds.AsNoTracking()
+            .Where(x => x.ReleasedAt == null)
+            .OrderByDescending(x => x.PlacedAt)
+            .ToArrayAsync();
+    }
+}

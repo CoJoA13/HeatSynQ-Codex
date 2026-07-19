@@ -1,0 +1,49 @@
+@page "/admin/audit"
+@using HeatSynQ.Platform.Infrastructure.Persistence
+@using Microsoft.EntityFrameworkCore
+@attribute [Authorize(Policy = "platform.audit.view")]
+@inject IDbContextFactory<PlatformDbContext> DbContextFactory
+
+<PageTitle>Audit history | HeatSynQ</PageTitle>
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">ADMINISTRATION / SECURITY</div>
+        <h1>Audit history</h1>
+        <p>Review append-only security and administration activity with before/after context.</p>
+    </div>
+    <a class="primary-action" href="/api/v1/platform/audit/export">Export CSV</a>
+</div>
+<section class="panel data-panel">
+    <table class="data-table">
+        <thead><tr><th>Time</th><th>Action</th><th>Entity</th><th>Actor</th><th>Reason</th></tr></thead>
+        <tbody>
+        @foreach (var item in Events)
+        {
+            <tr>
+                <td>@item.OccurredAt.ToLocalTime().ToString("g")</td>
+                <td><code>@item.Action</code></td>
+                <td>@item.EntityType<br /><small>@item.EntityId</small></td>
+                <td>@item.ActorUserId</td>
+                <td>@item.Reason</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+    @if (Events.Length == 0)
+    {
+        <div class="empty-state">No audit records match the current view.</div>
+    }
+</section>
+
+@code {
+    private AuditEvent[] Events { get; set; } = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbContextFactory.CreateDbContextAsync();
+        Events = await db.AuditEvents.AsNoTracking()
+            .OrderByDescending(x => x.OccurredAt)
+            .Take(200)
+            .ToArrayAsync();
+    }
+}
