@@ -20,6 +20,8 @@ public sealed class SecurityPageTests
         var disabledPage = await client.GetAsync("/account/security");
         var disabledHtml = await disabledPage.Content.ReadAsStringAsync();
         Assert.Equal(HttpStatusCode.OK, disabledPage.StatusCode);
+        Assert.Contains("href=\"/account/password\"", disabledHtml);
+        Assert.Contains("Change password", disabledHtml);
         Assert.Contains("data-mfa-begin", disabledHtml);
         Assert.Contains("data-api-form=\"enable-mfa\"", disabledHtml);
 

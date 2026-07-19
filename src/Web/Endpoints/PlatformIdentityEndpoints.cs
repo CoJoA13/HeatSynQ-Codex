@@ -15,6 +15,7 @@ namespace HeatSynQ.Web.Endpoints;
 public static class PlatformIdentityEndpoints
 {
     private const string SessionIdClaim = "heatsynq:session_id";
+    private const string MustChangePasswordClaim = "heatsynq:must_change_password";
 
     public static IEndpointRouteBuilder MapPlatformIdentityEndpoints(this IEndpointRouteBuilder endpoints)
     {
@@ -45,6 +46,12 @@ public static class PlatformIdentityEndpoints
         endpoints.MapPost("/account/login/2fa/recovery", BrowserRecoveryCodeLoginAsync)
             .AllowAnonymous()
             .RequireRateLimiting("authentication");
+
+        endpoints.MapPost("/api/v1/auth/password", ChangeOwnPasswordAsync)
+            .RequireAuthorization();
+
+        endpoints.MapPost("/account/password", BrowserChangeOwnPasswordAsync)
+            .RequireAuthorization();
 
         endpoints.MapGet("/api/v1/auth/me", CurrentIdentityAsync)
             .RequireAuthorization();
@@ -90,6 +97,11 @@ public static class PlatformIdentityEndpoints
         endpoints.MapPost("/api/v1/platform/users/{userId:guid}/revoke-sessions", RevokeUserSessionsAsync)
             .RequireAuthorization(new AuthorizationPolicyBuilder()
                 .AddRequirements(new PermissionRequirement("platform.sessions.revoke"))
+                .Build());
+
+        endpoints.MapPost("/api/v1/platform/users/{userId:guid}/reset-password", ResetUserPasswordAsync)
+            .RequireAuthorization(new AuthorizationPolicyBuilder()
+                .AddRequirements(new PermissionRequirement("platform.users.edit"))
                 .Build());
 
         endpoints.MapGet("/api/v1/platform/users/{userId:guid}/sessions", ListUserSessionsAsync)
@@ -226,7 +238,8 @@ public static class PlatformIdentityEndpoints
             UserName = request.Username?.Trim(),
             Email = request.Email?.Trim(),
             DisplayName = request.DisplayName.Trim(),
-            IsEnabled = true
+            IsEnabled = true,
+            MustChangePassword = true
         };
         var createResult = await userManager.CreateAsync(user, request.Password ?? string.Empty);
         if (!createResult.Succeeded)
@@ -600,7 +613,8 @@ public static class PlatformIdentityEndpoints
                 signInManager,
                 timeProvider,
                 cancellationToken);
-            return Results.LocalRedirect("/");
+            return Results.LocalRedirect(
+                user.MustChangePassword ? "/account/password" : "/");
         }
 
         return result.RequiresTwoFactor
@@ -636,7 +650,8 @@ public static class PlatformIdentityEndpoints
                 signInManager,
                 timeProvider,
                 cancellationToken);
-            return Results.LocalRedirect("/");
+            return Results.LocalRedirect(
+                user.MustChangePassword ? "/account/password" : "/");
         }
 
         return Results.LocalRedirect("/login/2fa?error=invalid");
@@ -666,7 +681,8 @@ public static class PlatformIdentityEndpoints
                 signInManager,
                 timeProvider,
                 cancellationToken);
-            return Results.LocalRedirect("/");
+            return Results.LocalRedirect(
+                user.MustChangePassword ? "/account/password" : "/");
         }
 
         var query = rememberMe is true ? "&rememberMe=true" : string.Empty;
@@ -694,6 +710,187 @@ public static class PlatformIdentityEndpoints
         });
     }
 
+    private static async Task<IResult> ChangeOwnPasswordAsync(
+        ChangeOwnPasswordRequest request,
+        HttpContext httpContext,
+        PlatformDbContext db,
+        UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var result = await ChangeOwnPasswordCoreAsync(
+            request,
+            httpContext,
+            db,
+            userManager,
+            signInManager,
+            timeProvider,
+            cancellationToken);
+        return result ?? Results.NoContent();
+    }
+
+    private static async Task<IResult> BrowserChangeOwnPasswordAsync(
+        [FromForm] string? currentPassword,
+        [FromForm] string? newPassword,
+        [FromForm] string? confirmPassword,
+        HttpContext httpContext,
+        PlatformDbContext db,
+        UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(newPassword, confirmPassword, StringComparison.Ordinal))
+        {
+            return Results.LocalRedirect("/account/password?error=invalid");
+        }
+        var result = await ChangeOwnPasswordCoreAsync(
+            new ChangeOwnPasswordRequest(currentPassword, newPassword),
+            httpContext,
+            db,
+            userManager,
+            signInManager,
+            timeProvider,
+            cancellationToken);
+        return result is null
+            ? Results.LocalRedirect("/")
+            : Results.LocalRedirect("/account/password?error=invalid");
+    }
+
+    private static async Task<IResult?> ChangeOwnPasswordCoreAsync(
+        ChangeOwnPasswordRequest request,
+        HttpContext httpContext,
+        PlatformDbContext db,
+        UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.CurrentPassword) ||
+            string.IsNullOrWhiteSpace(request.NewPassword))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["password"] = ["Current and new passwords are required."]
+            });
+        }
+        var user = await userManager.GetUserAsync(httpContext.User);
+        if (user is null) return Results.Unauthorized();
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var wasRequired = user.MustChangePassword;
+        var result = await userManager.ChangePasswordAsync(
+            user,
+            request.CurrentPassword,
+            request.NewPassword);
+        if (!result.Succeeded) return IdentityErrors(result);
+        user.MustChangePassword = false;
+        var updateResult = await userManager.UpdateAsync(user);
+        if (!updateResult.Succeeded) return IdentityErrors(updateResult);
+        db.AuditEvents.Add(AuditEvent.Create(
+            "platform.password.changed",
+            "User",
+            user.Id.ToString(),
+            user.Id,
+            AuditSessionId(httpContext),
+            "User changed password",
+            JsonSerializer.Serialize(new { mustChangePassword = wasRequired }),
+            JsonSerializer.Serialize(new { mustChangePassword = false }),
+            timeProvider.GetUtcNow()));
+        await db.SaveChangesAsync(cancellationToken);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
+        await RefreshSignInPreservingSessionAsync(
+            user,
+            httpContext,
+            signInManager);
+        return null;
+    }
+
+    private static async Task<IResult> ResetUserPasswordAsync(
+        Guid userId,
+        ResetUserPasswordRequest request,
+        HttpContext httpContext,
+        PlatformDbContext db,
+        UserManager<ApplicationUser> userManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.TemporaryPassword) ||
+            string.IsNullOrWhiteSpace(request.Reason))
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["password"] = ["A temporary password and administrative reason are required."]
+            });
+        }
+        var actor = await userManager.GetUserAsync(httpContext.User);
+        if (actor is null) return Results.Unauthorized();
+        var user = await userManager.FindByIdAsync(userId.ToString());
+        if (user is null) return Results.NotFound();
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var wasRequired = user.MustChangePassword;
+        var token = await userManager.GeneratePasswordResetTokenAsync(user);
+        var resetResult = await userManager.ResetPasswordAsync(
+            user,
+            token,
+            request.TemporaryPassword);
+        if (!resetResult.Succeeded) return IdentityErrors(resetResult);
+        user.MustChangePassword = true;
+        var updateResult = await userManager.UpdateAsync(user);
+        if (!updateResult.Succeeded) return IdentityErrors(updateResult);
+        var now = timeProvider.GetUtcNow();
+        await RevokeActiveSessionRecordsAsync(
+            user.Id,
+            actor.Id,
+            request.Reason.Trim(),
+            now,
+            db,
+            cancellationToken);
+        db.AuditEvents.Add(AuditEvent.Create(
+            "platform.password.reset",
+            "User",
+            user.Id.ToString(),
+            actor.Id,
+            AuditSessionId(httpContext),
+            request.Reason.Trim(),
+            JsonSerializer.Serialize(new { mustChangePassword = wasRequired }),
+            JsonSerializer.Serialize(new { mustChangePassword = true, sessions = "revoked" }),
+            now));
+        await db.SaveChangesAsync(cancellationToken);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
+        return Results.NoContent();
+    }
+
+    private static async Task RefreshSignInPreservingSessionAsync(
+        ApplicationUser user,
+        HttpContext httpContext,
+        SignInManager<ApplicationUser> signInManager)
+    {
+        var authentication = await httpContext.AuthenticateAsync(
+            IdentityConstants.ApplicationScheme);
+        var claims = httpContext.User.Claims
+            .Where(claim => claim.Type is SessionIdClaim or "amr")
+            .Select(claim => new Claim(claim.Type, claim.Value))
+            .Append(new Claim(
+                MustChangePasswordClaim,
+                user.MustChangePassword ? "true" : "false"))
+            .ToArray();
+        await signInManager.SignInWithClaimsAsync(
+            user,
+            authentication.Properties ?? new AuthenticationProperties(),
+            claims);
+    }
+
     private static async Task<IResult> BeginAuthenticatorEnrollmentAsync(
         HttpContext httpContext,
         PlatformDbContext db,
@@ -707,6 +904,13 @@ public static class PlatformIdentityEndpoints
         if (user is null)
         {
             return Results.Unauthorized();
+        }
+        if (user.TwoFactorEnabled)
+        {
+            return Results.Conflict(new
+            {
+                error = "Authenticator MFA is already enabled. Disable it before starting a replacement enrollment."
+            });
         }
 
         var sharedKey = await userManager.GetAuthenticatorKeyAsync(user);
@@ -1035,7 +1239,10 @@ public static class PlatformIdentityEndpoints
             new AuthenticationProperties { IsPersistent = isPersistent },
             [
                 new Claim(SessionIdClaim, session.Id.ToString()),
-                new Claim("amr", authenticationMethod)
+                new Claim("amr", authenticationMethod),
+                new Claim(
+                    MustChangePasswordClaim,
+                    user.MustChangePassword ? "true" : "false")
             ]);
     }
 
@@ -1235,6 +1442,14 @@ public static class PlatformIdentityEndpoints
     private sealed record EnableAuthenticatorRequest(string? Code);
 
     private sealed record DisableMfaRequest(string? CurrentPassword);
+
+    private sealed record ChangeOwnPasswordRequest(
+        string? CurrentPassword,
+        string? NewPassword);
+
+    private sealed record ResetUserPasswordRequest(
+        string? TemporaryPassword,
+        string? Reason);
 
     private sealed record CreateUserRequest(
         string? Username,

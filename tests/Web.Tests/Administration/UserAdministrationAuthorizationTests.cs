@@ -201,6 +201,14 @@ public sealed class UserAdministrationAuthorizationTests
             RememberMe = false
         });
         response.EnsureSuccessStatusCode();
+        if (!string.Equals(username, "admin", StringComparison.Ordinal))
+        {
+            (await client.PostAsJsonAsync("/api/v1/auth/password", new
+            {
+                CurrentPassword = password,
+                NewPassword = $"{password}Replacement"
+            })).EnsureSuccessStatusCode();
+        }
     }
 
     private static async Task CreateUserWithoutRolesAsync(IServiceProvider services)

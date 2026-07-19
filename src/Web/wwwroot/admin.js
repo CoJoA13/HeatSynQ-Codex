@@ -66,6 +66,10 @@
                 IsEnabled: formData.get("IsEnabled") === "true",
                 Reason: formData.get("Reason")
             }),
+            "reset-user-password": () => ({
+                TemporaryPassword: formData.get("TemporaryPassword"),
+                Reason: formData.get("Reason")
+            }),
             "revoke-user-sessions": () => ({
                 Reason: formData.get("Reason")
             }),

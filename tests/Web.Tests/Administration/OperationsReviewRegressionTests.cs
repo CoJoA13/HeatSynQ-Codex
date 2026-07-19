@@ -21,6 +21,12 @@ public sealed class OperationsReviewRegressionTests
 
         Assert.Contains("current\\Web\\HeatSynQ.Web.exe", script);
         Assert.Contains("current\\Worker\\HeatSynQ.Worker.exe", script);
+        Assert.Contains("WebServiceCredential", script);
+        Assert.Contains("WorkerServiceCredential", script);
+        Assert.Contains("-Credential $WebServiceCredential", script);
+        Assert.Contains("-Credential $WorkerServiceCredential", script);
+        Assert.Contains("StartName", script);
+        Assert.Contains("already exists under", script);
     }
 
     [Fact]
@@ -50,6 +56,25 @@ public sealed class OperationsReviewRegressionTests
         Assert.Contains("managedStorageStaging", restore);
         Assert.Contains("managedStorageBackup", restore);
         Assert.Contains("Restore-ManagedStorageBackup", restore);
+        Assert.Contains("preRestoreDump", restore);
+        Assert.Contains("Restore-PreRestoreDatabase", restore);
+        Assert.Contains("MaintenanceDatabaseUrl", restore);
+        Assert.Contains("TargetDatabaseName", restore);
+        Assert.Contains("$PgDropDb", restore);
+        Assert.Contains("--create", restore);
+        Assert.Contains("SELECT current_database();", restore);
+        Assert.Contains("does not match the database addressed", restore);
+        Assert.Contains("preserveRestoreArtifacts", restore);
+    }
+
+    [Fact]
+    public void Forwarded_headers_run_before_transport_security_middleware()
+    {
+        var program = Read("src/Web/Program.cs");
+
+        Assert.True(
+            program.IndexOf("app.UseForwardedHeaders()", StringComparison.Ordinal) <
+            program.IndexOf("app.UseHsts()", StringComparison.Ordinal));
     }
 
     private static string Read(string relativePath) =>

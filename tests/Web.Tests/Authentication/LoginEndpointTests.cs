@@ -76,6 +76,64 @@ public sealed class LoginEndpointTests
         Assert.Equal(HttpStatusCode.Unauthorized, me.StatusCode);
     }
 
+    [Fact]
+    public async Task Forwarded_clients_receive_independent_authentication_rate_limits()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        using (var bootstrap = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/platform/bootstrap"))
+        {
+            bootstrap.Headers.Add("X-Forwarded-For", "192.0.2.10");
+            bootstrap.Content = JsonContent.Create(new
+            {
+                BootstrapSecret = "test-bootstrap-secret",
+                Username = "admin",
+                Email = "admin@example.test",
+                DisplayName = "Platform Administrator",
+                Password = "Correct-Horse-Battery-Staple!7"
+            });
+            (await client.SendAsync(bootstrap)).EnsureSuccessStatusCode();
+        }
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            using var invalid = LoginRequest(
+                "nonexistent",
+                "wrong-password",
+                "192.0.2.20");
+            Assert.Equal(
+                HttpStatusCode.Unauthorized,
+                (await client.SendAsync(invalid)).StatusCode);
+        }
+
+        using var valid = LoginRequest(
+            "admin",
+            "Correct-Horse-Battery-Staple!7",
+            "192.0.2.30");
+        var response = await client.SendAsync(valid);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    private static HttpRequestMessage LoginRequest(
+        string username,
+        string password,
+        string forwardedFor)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/v1/auth/login")
+        {
+            Content = JsonContent.Create(new
+            {
+                Username = username,
+                Password = password,
+                RememberMe = false
+            })
+        };
+        request.Headers.Add("X-Forwarded-For", forwardedFor);
+        return request;
+    }
+
     private static Task<HttpResponseMessage> BootstrapAsync(HttpClient client) =>
         client.PostAsJsonAsync("/api/v1/platform/bootstrap", new
         {

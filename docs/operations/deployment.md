@@ -22,7 +22,18 @@ One supported Windows Server host runs PostgreSQL, HeatSynQ Web, and the HeatSyn
 
 9. Run `scripts\install-services.ps1` from an elevated PowerShell session. Both
    service executable paths are registered through the `current` junction so a
-   release switch updates both services atomically.
+   release switch updates both services atomically. Supply dedicated credentials
+   for both services; the script does not permit LocalSystem defaults:
+
+   ```powershell
+   .\scripts\install-services.ps1 `
+     -InstallRoot "D:\HeatSynQ" `
+     -WebServiceCredential (Get-Credential "DOMAIN\HeatSynQ-Web") `
+     -WorkerServiceCredential (Get-Credential "DOMAIN\HeatSynQ-Worker")
+   ```
+   If either service already exists under a different identity, installation
+   stops instead of silently retaining LocalSystem or another unexpected
+   account. Explicitly reconfigure or remove that service before retrying.
 10. Bind the web service through IIS or an approved reverse proxy to internal HTTPS with a company-trusted certificate.
 11. Restrict inbound firewall access to approved LAN ranges and HTTPS.
 12. Schedule `scripts\backup-platform.ps1` nightly and verify `/api/v1/platform/health`.
@@ -38,6 +49,13 @@ Use protected absolute paths for:
 - `Platform__MaintenanceFlagPath`
 
 Development, test, and production require separate databases and storage roots. The application login must not be a PostgreSQL superuser. Grant service identities only the filesystem access each service needs.
+
+The web host trusts forwarded client/protocol headers only from loopback by
+default, which covers an IIS reverse proxy on the same server. If the approved
+proxy is on another host, add each proxy IP to `Platform__TrustedProxies__0`,
+`Platform__TrustedProxies__1`, and so on. Never trust forwarded headers from
+arbitrary network clients. Authentication rate limits use the resulting client
+address.
 
 ## Update
 

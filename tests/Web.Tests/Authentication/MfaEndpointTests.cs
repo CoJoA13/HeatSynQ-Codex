@@ -165,6 +165,27 @@ public sealed class MfaEndpointTests
     }
 
     [Fact]
+    public async Task Enabled_mfa_secret_cannot_be_exposed_by_restarting_enrollment()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(client);
+        (await client.PostAsync("/api/v1/auth/mfa/authenticator", content: null))
+            .EnsureSuccessStatusCode();
+        var enrollmentCode = await GenerateAuthenticatorCodeAsync(factory.Services, "admin");
+        (await client.PostAsJsonAsync(
+            "/api/v1/auth/mfa/authenticator/enable",
+            new { Code = enrollmentCode })).EnsureSuccessStatusCode();
+
+        var response = await client.PostAsync(
+            "/api/v1/auth/mfa/authenticator",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.DoesNotContain("sharedKey", await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
     public async Task Browser_login_redirects_to_mfa_form_and_accepts_authenticator_code()
     {
         await using var factory = new PlatformWebApplicationFactory();

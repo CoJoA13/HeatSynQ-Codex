@@ -91,6 +91,11 @@ public sealed class UserAdministrationPageTests
             Password = "Correct-Horse-Battery-Staple!8",
             RememberMe = false
         })).EnsureSuccessStatusCode();
+        (await operatorClient.PostAsJsonAsync("/api/v1/auth/password", new
+        {
+            CurrentPassword = "Correct-Horse-Battery-Staple!8",
+            NewPassword = "Replacement-Horse-Battery-Staple!8"
+        })).EnsureSuccessStatusCode();
 
         var response = await operatorClient.GetAsync("/admin/users");
 

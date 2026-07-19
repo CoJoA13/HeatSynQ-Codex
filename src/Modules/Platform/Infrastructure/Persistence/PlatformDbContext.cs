@@ -9,6 +9,7 @@ public sealed class ApplicationUser : IdentityUser<Guid>
     public string DisplayName { get; set; } = string.Empty;
     public bool IsEnabled { get; set; } = true;
     public Guid SessionVersion { get; set; } = Guid.NewGuid();
+    public bool MustChangePassword { get; set; }
     public DateTimeOffset? DisabledAt { get; set; }
     public string? DisabledReason { get; set; }
 }

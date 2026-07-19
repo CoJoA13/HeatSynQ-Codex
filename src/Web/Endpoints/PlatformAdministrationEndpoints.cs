@@ -1,11 +1,11 @@
 using System.Data;
 using System.Globalization;
 using System.Security.Claims;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HeatSynQ.Platform.Infrastructure.Persistence;
 using HeatSynQ.Web.Security;
+using HeatSynQ.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -307,17 +307,36 @@ public static class PlatformAdministrationEndpoints
         PlatformDbContext db,
         CancellationToken cancellationToken)
     {
-        await using var transaction = db.Database.IsRelational()
-            ? await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken)
-            : null;
         key = key.Trim().ToUpperInvariant();
-        var record = await db.NumberSequences.SingleOrDefaultAsync(x => x.Key == key, cancellationToken);
-        if (record is null) return Results.NotFound();
-        var value = $"{record.Prefix}{record.NextValue.ToString($"D{record.Padding}", CultureInfo.InvariantCulture)}";
+        var usesPostgreSql = db.Database.IsNpgsql();
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(
+                usesPostgreSql
+                    ? IsolationLevel.ReadCommitted
+                    : IsolationLevel.Serializable,
+                cancellationToken)
+            : null;
+        var record = usesPostgreSql
+            ? await db.NumberSequences
+                .FromSqlInterpolated(
+                    $"""SELECT * FROM platform.number_sequences WHERE "Key" = {key} FOR UPDATE""")
+                .SingleOrDefaultAsync(cancellationToken)
+            : await db.NumberSequences.SingleOrDefaultAsync(
+                x => x.Key == key,
+                cancellationToken);
+        if (record is null)
+        {
+            return Results.NotFound();
+        }
+        var value =
+            $"{record.Prefix}{record.NextValue.ToString($"D{record.Padding}", CultureInfo.InvariantCulture)}";
         record.NextValue++;
         record.Version = Guid.NewGuid();
         await db.SaveChangesAsync(cancellationToken);
-        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
         return Results.Ok(new { Value = value });
     }
 
@@ -510,20 +529,15 @@ public static class PlatformAdministrationEndpoints
             return Results.BadRequest(new { error = "Invalid managed storage path." });
         Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
         var temporary = $"{destination}.upload";
+        ManagedFileWriteResult writeResult;
         await using (var source = file.OpenReadStream())
-        await using (var target = new FileStream(
-            temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-            81920, FileOptions.Asynchronous | FileOptions.WriteThrough))
         {
-            await source.CopyToAsync(target, cancellationToken);
+            writeResult = await ManagedFileWriter.WriteAsync(
+                source,
+                temporary,
+                destination,
+                cancellationToken);
         }
-        string checksum;
-        await using (var checksumStream = File.OpenRead(temporary))
-        {
-            checksum = Convert.ToHexString(await SHA256.HashDataAsync(
-                checksumStream, cancellationToken));
-        }
-        File.Move(temporary, destination);
         var now = timeProvider.GetUtcNow();
         var record = new StoredFileRecord
         {
@@ -535,8 +549,8 @@ public static class PlatformAdministrationEndpoints
             StoredRelativePath = relativePath,
             ContentType = string.IsNullOrWhiteSpace(file.ContentType)
                 ? "application/octet-stream" : file.ContentType,
-            Length = file.Length,
-            ChecksumSha256 = checksum,
+            Length = writeResult.Length,
+            ChecksumSha256 = writeResult.ChecksumSha256,
             Revision = revision,
             CreatedByUserId = actor.Id,
             CreatedAt = now,

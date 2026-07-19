@@ -49,6 +49,33 @@ public sealed class PlatformAdministrationPageTests
         Assert.Contains("data-api-form=\"release-legal-hold\"", html);
     }
 
+    [Fact]
+    public async Task Facility_editors_are_populated_from_persisted_values()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(client);
+        (await client.PutAsJsonAsync("/api/v1/platform/number-sequences/JOB", new
+        {
+            Prefix = "HT-",
+            NextValue = 9876,
+            Padding = 8,
+            Reason = "Custom job numbering"
+        })).EnsureSuccessStatusCode();
+        (await client.PutAsJsonAsync("/api/v1/platform/retention-policies/quality", new
+        {
+            RetentionYears = 25,
+            Reason = "Customer retention requirement"
+        })).EnsureSuccessStatusCode();
+
+        var html = await client.GetStringAsync("/admin/facility");
+
+        Assert.Contains("name=\"Prefix\" value=\"HT-\"", html);
+        Assert.Contains("name=\"NextValue\" type=\"number\" min=\"1\" value=\"9876\"", html);
+        Assert.Contains("name=\"Padding\" type=\"number\" min=\"1\" max=\"20\" value=\"8\"", html);
+        Assert.Contains("name=\"RetentionYears\" type=\"number\" min=\"1\" max=\"100\" value=\"25\"", html);
+    }
+
     private static async Task BootstrapAndLoginAsync(HttpClient client)
     {
         (await client.PostAsJsonAsync("/api/v1/platform/bootstrap", new

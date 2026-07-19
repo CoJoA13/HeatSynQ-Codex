@@ -49,6 +49,8 @@ Example:
    .\scripts\restore-platform.ps1 `
      -Archive <archive> `
      -TargetDatabaseUrl <isolated database URL> `
+     -MaintenanceDatabaseUrl <isolated server postgres database URL> `
+     -TargetDatabaseName <isolated target database name> `
      -TargetManagedStoragePath <isolated managed-storage path>
    ```
 5. Start the matching HeatSynQ release against the restored database.
@@ -58,7 +60,18 @@ Example:
 
 The restore script validates the archive and requires its managed-file tree before
 changing the database. The target managed-storage directory must be empty unless
-`-ReplaceManagedStorage` is explicitly supplied. Database restore uses
+`-ReplaceManagedStorage` is explicitly supplied. Before changing the target, the
+script creates a custom-format safety dump of its current database and stages the
+new managed-file tree on the target volume. Database restore uses
 `pg_restore --clean --if-exists --exit-on-error`. Existing managed storage is
-renamed to a sibling backup during the final swap and restored automatically if
-the staged tree cannot be installed.
+renamed to a sibling backup during the final swap. If the archive database
+restore or storage swap fails, both the safety database dump and prior file tree
+are restored. Database rollback force-removes and recreates the complete target
+database from a create-capable safety archive, using the separately supplied
+maintenance-database connection. Objects introduced only by the failed archive
+therefore cannot survive. Before archive extraction or database changes, the
+script verifies that `TargetDatabaseName` exactly matches `current_database()`
+from `TargetDatabaseUrl`; a mismatch stops the restore. The restore operator must
+own the target database or have equivalent database create/drop privileges. If
+either rollback step also fails, the script retains the recovery directory and
+reports its path for manual recovery.

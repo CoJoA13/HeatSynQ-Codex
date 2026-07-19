@@ -128,6 +128,11 @@
                                     data-dialog-open="status-@user.Id">
                                 @(user.IsEnabled ? "Disable" : "Restore")
                             </button>
+                            <button class="row-action"
+                                    type="button"
+                                    data-dialog-open="password-@user.Id">
+                                Reset password
+                            </button>
                             }
                             @if (CanRevokeSessions)
                             {
@@ -171,6 +176,33 @@
                                     <button type="submit" class="primary-action">
                                         @(user.IsEnabled ? "Disable user" : "Restore user")
                                     </button>
+                                </div>
+                            </form>
+                        </dialog>
+                        <dialog id="password-@user.Id" class="admin-dialog compact-dialog">
+                            <form action="/api/v1/platform/users/@user.Id/reset-password"
+                                  method="post"
+                                  data-api-form="reset-user-password">
+                                <div class="dialog-heading">
+                                    <div>
+                                        <div class="eyebrow">ADMINISTRATION / USERS</div>
+                                        <h2>Reset password for @user.DisplayName</h2>
+                                    </div>
+                                    <button type="button" class="dialog-close" data-dialog-close aria-label="Close">Ã—</button>
+                                </div>
+                                <p>All active sessions will be revoked. The user must replace this temporary password after signing in.</p>
+                                <div class="form-error" role="alert" hidden></div>
+                                <label>
+                                    <span>Temporary password</span>
+                                    <input name="TemporaryPassword" type="password" autocomplete="new-password" minlength="12" required />
+                                </label>
+                                <label>
+                                    <span>Reason</span>
+                                    <textarea name="Reason" rows="3" required></textarea>
+                                </label>
+                                <div class="dialog-actions">
+                                    <button type="button" data-dialog-close>Cancel</button>
+                                    <button type="submit" class="primary-action">Reset password</button>
                                 </div>
                             </form>
                         </dialog>

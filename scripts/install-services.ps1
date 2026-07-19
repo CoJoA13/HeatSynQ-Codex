@@ -1,6 +1,10 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$InstallRoot,
+    [Parameter(Mandatory = $true)]
+    [PSCredential]$WebServiceCredential,
+    [Parameter(Mandatory = $true)]
+    [PSCredential]$WorkerServiceCredential,
     [string]$WebServiceName = "HeatSynQWeb",
     [string]$WorkerServiceName = "HeatSynQWorker"
 )
@@ -16,13 +20,41 @@ foreach ($executable in @($webExecutable, $workerExecutable)) {
     }
 }
 
-if (-not (Get-Service -Name $WebServiceName -ErrorAction SilentlyContinue)) {
-    New-Service -Name $WebServiceName -BinaryPathName "`"$webExecutable`"" `
-        -DisplayName "HeatSynQ Web" -StartupType Automatic
+function Assert-ExistingServiceIdentity {
+    param(
+        [string]$ServiceName,
+        [PSCredential]$Credential
+    )
+    $escapedName = $ServiceName.Replace("'", "''")
+    $service = Get-CimInstance Win32_Service -Filter "Name='$escapedName'"
+    if ($null -eq $service) {
+        throw "Could not inspect the existing $ServiceName service identity."
+    }
+    if (-not [string]::Equals(
+            $service.StartName,
+            $Credential.UserName,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw "$ServiceName already exists under '$($service.StartName)' instead of '$($Credential.UserName)'. Remove or explicitly reconfigure the service identity before continuing."
+    }
 }
-if (-not (Get-Service -Name $WorkerServiceName -ErrorAction SilentlyContinue)) {
+
+$webService = Get-Service -Name $WebServiceName -ErrorAction SilentlyContinue
+if ($webService) {
+    Assert-ExistingServiceIdentity $WebServiceName $WebServiceCredential
+}
+else {
+    New-Service -Name $WebServiceName -BinaryPathName "`"$webExecutable`"" `
+        -DisplayName "HeatSynQ Web" -StartupType Automatic `
+        -Credential $WebServiceCredential
+}
+$workerService = Get-Service -Name $WorkerServiceName -ErrorAction SilentlyContinue
+if ($workerService) {
+    Assert-ExistingServiceIdentity $WorkerServiceName $WorkerServiceCredential
+}
+else {
     New-Service -Name $WorkerServiceName -BinaryPathName "`"$workerExecutable`"" `
-        -DisplayName "HeatSynQ Background Worker" -StartupType Automatic
+        -DisplayName "HeatSynQ Background Worker" -StartupType Automatic `
+        -Credential $WorkerServiceCredential
 }
 
 & sc.exe failure $WebServiceName reset= 86400 actions= restart/5000/restart/15000/restart/60000

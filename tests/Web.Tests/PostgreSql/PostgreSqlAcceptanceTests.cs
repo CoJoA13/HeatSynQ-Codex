@@ -54,12 +54,34 @@ public sealed class PostgreSqlAcceptanceTests
             },
             IdempotencyKey = $"postgres-acceptance-{Guid.NewGuid():N}"
         })).EnsureSuccessStatusCode();
+        (await client.PutAsJsonAsync("/api/v1/platform/number-sequences/JOB", new
+        {
+            Prefix = "PG-",
+            NextValue = 1,
+            Padding = 6,
+            Reason = "Concurrent allocation acceptance"
+        })).EnsureSuccessStatusCode();
+        var allocationResponses = await Task.WhenAll(
+            Enumerable.Range(0, 16).Select(_ =>
+                client.PostAsync(
+                    "/api/v1/platform/number-sequences/JOB/allocate",
+                    content: null)));
+        var allocatedValues = new List<string>();
+        foreach (var response in allocationResponses)
+        {
+            response.EnsureSuccessStatusCode();
+            allocatedValues.Add(
+                (await response.Content.ReadFromJsonAsync<AllocatedNumber>())!.Value);
+        }
 
         var audit = await client.GetAsync(
             "/api/v1/platform/audit?action=platform.settings.updated");
         audit.EnsureSuccessStatusCode();
         Assert.Contains("platform.settings.updated", await audit.Content.ReadAsStringAsync());
+        Assert.Equal(16, allocatedValues.Distinct().Count());
     }
+
+    private sealed record AllocatedNumber(string Value);
 
     private sealed class PostgreSqlFactory(string connectionString)
         : WebApplicationFactory<Program>

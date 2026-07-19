@@ -9,9 +9,19 @@
     <div>
         <div class="eyebrow">ACCOUNT / SECURITY</div>
         <h1>Account security</h1>
-        <p>Manage authenticator-app MFA and recovery access.</p>
+        <p>Manage your password, authenticator-app MFA, and recovery access.</p>
     </div>
 </div>
+
+<section class="panel security-panel">
+    <div class="security-status">
+        <div>
+            <h2>Password</h2>
+            <p>Change your password using your current password.</p>
+        </div>
+        <a class="primary-action" href="/account/password">Change password</a>
+    </div>
+</section>
 
 <section class="panel security-panel">
     @if (MfaEnabled)

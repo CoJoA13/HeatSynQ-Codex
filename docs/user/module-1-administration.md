@@ -11,12 +11,19 @@ The first user receives the system `Administrator` role and every Module 1 permi
 Open **Administration → Users & sessions** to:
 
 - create an ERP account and assign one or more roles;
+- issue or reset a temporary password, immediately revoke existing sessions, and
+  require the user to replace that password after sign-in;
 - disable or restore an account with a required reason;
 - revoke all sessions immediately;
 - add a temporary or permanent explicit permission allow/deny; and
 - revoke an override with a required reason.
 
-Users can open their name in the top bar to enroll authenticator MFA, save one-time recovery codes, or disable MFA after confirming their password.
+Users must replace an administrator-issued temporary password before opening any
+other ERP screen. They can later open **Account security** to change their
+password, enroll authenticator MFA, save one-time recovery codes, or disable MFA
+after confirming their password. An enabled authenticator secret is never
+displayed again; replacing it requires disabling MFA and completing a new
+enrollment.
 
 Never share accounts. Disable a departed user's account; do not attempt to delete it.
 
