@@ -7,31 +7,43 @@ One supported Windows Server host runs PostgreSQL, HeatSynQ Web, and the HeatSyn
 ## Provisioning
 
 1. Patch Windows and restrict interactive administrator access.
-2. Install the current supported PostgreSQL release and .NET 10 Hosting Bundle.
+2. Install PostgreSQL 16 or later and the .NET 10 Hosting Bundle.
 3. Create dedicated Windows service identities with log-on-as-service rights and no interactive login.
 4. Create a PostgreSQL database and least-privilege application login.
-5. Store the connection string outside the repository as `ConnectionStrings__Platform`.
-6. Restore repository-local tools with `dotnet tool restore`.
-7. Apply migrations using `dotnet tool run dotnet-ef database update`.
-8. Publish with `dotnet publish src\Web -c Release -o C:\HeatSynQ\Web`.
-9. Bind the web host to an internal DNS name with a company-trusted TLS certificate.
-10. Restrict inbound firewall access to approved LAN ranges and the HTTPS port.
-11. Configure the Windows service recovery policy to restart after failure.
-12. Verify `/health`, application logs, storage permissions, and backup destination access.
+5. Store `ConnectionStrings__Platform`, `Platform__BootstrapSecret`, and storage paths in protected machine-level configuration.
+6. Restore tools and dependencies with `dotnet tool restore` and `dotnet restore HeatSynQ.slnx --configfile NuGet.Config`.
+7. Publish Web and Worker into a versioned staging directory.
+8. Create the migration bundle:
 
-## Configuration
+   ```powershell
+   dotnet ef migrations bundle --project src\Modules\Platform\Infrastructure --startup-project src\Web -r win-x64 -o <release>\migrate.exe
+   ```
 
-Development, test, and production use separate databases and storage roots. Production secrets must be supplied through protected machine-level configuration. Do not grant the web application PostgreSQL superuser rights.
+9. Run `scripts\install-services.ps1` from an elevated PowerShell session.
+10. Bind the web service through IIS or an approved reverse proxy to internal HTTPS with a company-trusted certificate.
+11. Restrict inbound firewall access to approved LAN ranges and HTTPS.
+12. Schedule `scripts\backup-platform.ps1` nightly and verify `/api/v1/platform/health`.
 
-## Update and rollback
+## Required production paths
 
-1. Announce maintenance mode and drain background work.
-2. Record application version and migration state.
-3. Run and verify a pre-update backup.
-4. Stop HeatSynQ services.
-5. Deploy the versioned release to a new directory.
-6. Apply forward migrations.
-7. Start services and verify health plus smoke tests.
-8. Switch the stable service path to the new release.
+Use protected absolute paths for:
 
-If verification fails, stop services, restore the previous application directory, and follow the tested database rollback/restore decision documented in the release notes. Never attempt an unreviewed down-migration against production.
+- `Platform__DataProtectionKeysPath`
+- `Platform__FileStoragePath`
+- `Platform__BackupStatusPath`
+- `Platform__WorkerHeartbeatPath`
+- `Platform__MaintenanceFlagPath`
+
+Development, test, and production require separate databases and storage roots. The application login must not be a PostgreSQL superuser. Grant service identities only the filesystem access each service needs.
+
+## Update
+
+1. Publish Web, Worker, release notes, and `migrate.exe` into one release source directory.
+2. Run and verify a pre-update backup.
+3. Run `scripts\deploy-release.ps1` with the release source, install root, semantic version, and verified archive.
+4. The script enters maintenance, stops Worker then Web, copies to a new version directory, runs the migration bundle, switches the stable junction, and starts Web then Worker.
+5. Verify detailed health, administrator login, session revocation, managed-file download, queue processing, and an audit export.
+
+## Rollback
+
+`scripts\rollback-release.ps1` switches the stable junction to the recorded prior binaries. Database rollback is intentionally not automatic. If a release migration is not backward compatible, use that release's reviewed database decision: forward repair or restore the verified pre-update archive with `restore-platform.ps1`. Never run an unreviewed down-migration in production.

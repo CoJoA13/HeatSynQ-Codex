@@ -2,26 +2,25 @@
 
 HeatSynQ is an on-premises, heat-treat-focused ERP built as an ASP.NET Core modular monolith with PostgreSQL.
 
-Development is deliberately sequential. A module must pass its production-readiness gate before work begins on the next module.
+Development is sequential. A module must pass its production-readiness gate before work begins on the next module.
 
 ## Current delivery
 
-Module 1 — Platform & Administration is in progress.
+Module 1 — Platform & Administration is implemented on the `codex/module-1-identity-admin` branch and is pending review.
 
-Implemented foundations:
+Module 1 includes:
 
-- .NET 10 LTS solution and interactive server-rendered web application
-- PostgreSQL platform schema and initial Entity Framework migration
-- ASP.NET Core Identity persistence model
-- role grants and expiring per-user permission overrides
-- tested permission precedence: deny, allow, role, default deny
-- account disabling and immediate session-version revocation
-- append-only audit-event enforcement
-- idempotent outbox storage and retry domain behavior
-- categorized, responsive navigation shell
-- health and versioned platform-status endpoints
-
-Database provisioning, first-administrator bootstrap, complete account-management workflows, MFA enrollment, background processing, file storage, backup validation, and browser acceptance tests remain before Module 1 can be accepted.
+- ERP-managed users and passwords, account lockout, optional authenticator MFA, recovery codes, and self-service security
+- multiple roles per user, explicit allow/deny overrides, temporary grants, and default-deny server authorization
+- tracked login sessions, user/admin revocation, disabled-account invalidation, and browser sign-out
+- append-only searchable audit history with controlled CSV export
+- company/facility settings, configurable numbering, retention policies, and legal holds
+- revisioned, checksummed managed files with authenticated downloads
+- idempotent durable work queue, notification records, print jobs, retries, and a Windows background service
+- PostgreSQL migrations and database health monitoring
+- storage, queue, worker-heartbeat, and encrypted-backup freshness health checks
+- responsive, categorized, permission-aware navigation and administration screens
+- encrypted local/off-server backup, clean restore, service install, versioned deployment, and rollback tooling
 
 ## Developer setup
 
@@ -38,13 +37,20 @@ dotnet tool run dotnet-ef database update --project src\Modules\Platform\Infrast
 dotnet run --project src\Web
 ```
 
-Never store production credentials in `appsettings.json`. Supply them through protected environment variables or the Windows service configuration.
+Run the worker separately:
+
+```powershell
+dotnet run --project src\Worker
+```
+
+Never store production credentials in `appsettings.json`. Supply them through protected machine-level environment variables or the Windows service configuration.
 
 ## Verification
 
 ```powershell
-dotnet test HeatSynQ.slnx --configuration Release
+dotnet format HeatSynQ.slnx --no-restore --verify-no-changes
 dotnet build HeatSynQ.slnx --configuration Release --no-restore
+dotnet test HeatSynQ.slnx --configuration Release --no-build
 ```
 
-Operational guidance is in [docs/operations/deployment.md](docs/operations/deployment.md) and [docs/operations/backup-and-restore.md](docs/operations/backup-and-restore.md).
+Operational guidance is in [deployment](docs/operations/deployment.md) and [backup and restore](docs/operations/backup-and-restore.md).

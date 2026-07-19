@@ -3,31 +3,47 @@
 ## Policy
 
 - Run an encrypted logical PostgreSQL backup nightly.
-- Retain local encrypted archives for 14 days and protected off-server copies according to company policy.
-- Protect the backup destination with BitLocker or equivalent storage encryption.
-- Store the archive password in the Windows service credential store, not in scripts.
-- Test a clean-server restore at least quarterly and after material schema changes.
+- Retain local encrypted archives for 14 days by default.
+- Copy every accepted archive to separate protected storage.
+- Protect both destinations with BitLocker or equivalent encryption.
+- Store the archive password in the Windows service credential store, not scripts.
+- Perform a clean restore drill at least quarterly and after material schema changes.
 
 ## Backup
 
-The supplied `scripts/backup-platform.ps1` uses `pg_dump` custom format and 7-Zip AES-256 encryption. The scheduled-task identity needs PostgreSQL access, write access to the staging/destination directories, and read/execute access to the tools.
+`scripts\backup-platform.ps1` requires local and off-server destinations. It:
+
+1. creates a PostgreSQL custom-format dump;
+2. encrypts it with 7-Zip AES-256 and encrypted headers;
+3. tests the local archive;
+4. copies it off-server;
+5. tests the off-server archive independently;
+6. removes expired local archives; and
+7. writes the health marker only after every required step succeeds.
 
 Required protected environment variables:
 
 - `HEATSYNQ_DATABASE_URL`
 - `HEATSYNQ_BACKUP_PASSWORD`
 
-Successful creation is not sufficient verification. The scheduled workflow must copy the archive off-server, test archive integrity, and alert when any step fails.
+Example:
+
+```powershell
+.\scripts\backup-platform.ps1 `
+  -Destination "D:\HeatSynQBackups" `
+  -OffServerDestination "\\backup-server\protected\HeatSynQ" `
+  -StatusPath "C:\ProgramData\HeatSynQ\last-successful-backup.txt"
+```
 
 ## Restore drill
 
-1. Provision a clean PostgreSQL test instance.
-2. Copy one off-server archive to an isolated restore location.
-3. Validate archive integrity with `7z t`.
-4. Decrypt/extract the `.dump`.
-5. Create an empty restore database.
-6. Run `pg_restore --clean --if-exists --exit-on-error`.
-7. Apply no migrations unless the restore procedure explicitly targets a newer application release.
-8. Start the matching HeatSynQ release against the restored database.
-9. Verify health, administrator login, role grants, audit history, attachments, and outbox state.
-10. Record recovery-point and recovery-time results and securely destroy drill artifacts.
+1. Provision an isolated empty PostgreSQL database.
+2. Select an off-server archive and record its timestamp.
+3. Set `HEATSYNQ_BACKUP_PASSWORD`.
+4. Run `scripts\restore-platform.ps1 -Archive <archive> -TargetDatabaseUrl <isolated database URL>`.
+5. Start the matching HeatSynQ release against the restored database.
+6. Verify health, administrator login, roles and overrides, audit history, stored-file metadata/content, and outbox state.
+7. Record recovery point, recovery time, operator, archive checksum, and results.
+8. Securely destroy drill artifacts.
+
+The restore script always validates the archive before extraction and uses `pg_restore --clean --if-exists --exit-on-error`.
