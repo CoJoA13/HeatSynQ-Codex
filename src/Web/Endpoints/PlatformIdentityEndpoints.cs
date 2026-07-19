@@ -22,6 +22,10 @@ public static class PlatformIdentityEndpoints
             .AllowAnonymous()
             .RequireRateLimiting("authentication");
 
+        endpoints.MapPost("/api/v1/auth/login/2fa", TwoFactorLoginAsync)
+            .AllowAnonymous()
+            .RequireRateLimiting("authentication");
+
         endpoints.MapPost("/account/login", BrowserLoginAsync)
             .AllowAnonymous()
             .RequireRateLimiting("authentication");
@@ -33,6 +37,14 @@ public static class PlatformIdentityEndpoints
             .RequireAuthorization();
 
         endpoints.MapPost("/api/v1/auth/revoke-sessions", RevokeOwnSessionsAsync)
+            .RequireAuthorization();
+
+        endpoints.MapPost("/api/v1/auth/mfa/authenticator", BeginAuthenticatorEnrollmentAsync)
+            .RequireAuthorization();
+
+        endpoints.MapPost(
+                "/api/v1/auth/mfa/authenticator/enable",
+                EnableAuthenticatorAsync)
             .RequireAuthorization();
 
         endpoints.MapGet("/api/v1/platform/users", ListUsersAsync)
@@ -368,9 +380,40 @@ public static class PlatformIdentityEndpoints
             request.RememberMe,
             lockoutOnFailure: true);
 
+        if (result.Succeeded)
+        {
+            return Results.NoContent();
+        }
+
+        if (result.RequiresTwoFactor)
+        {
+            return Results.Json(
+                new
+                {
+                    error = "A two-factor authentication code is required.",
+                    requiresTwoFactor = true
+                },
+                statusCode: StatusCodes.Status401Unauthorized);
+        }
+
+        return InvalidCredentials();
+    }
+
+    private static async Task<IResult> TwoFactorLoginAsync(
+        TwoFactorLoginRequest request,
+        SignInManager<ApplicationUser> signInManager)
+    {
+        var code = NormalizeAuthenticatorCode(request.Code);
+        var result = await signInManager.TwoFactorAuthenticatorSignInAsync(
+            code,
+            request.RememberMe,
+            request.RememberClient);
+
         return result.Succeeded
             ? Results.NoContent()
-            : InvalidCredentials();
+            : Results.Json(
+                new { error = "Invalid two-factor authentication code." },
+                statusCode: StatusCodes.Status401Unauthorized);
     }
 
     private static async Task<IResult> BrowserLoginAsync(
@@ -420,6 +463,122 @@ public static class PlatformIdentityEndpoints
             Roles = roles
         });
     }
+
+    private static async Task<IResult> BeginAuthenticatorEnrollmentAsync(
+        HttpContext httpContext,
+        PlatformDbContext db,
+        UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
+        IConfiguration configuration,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var user = await userManager.GetUserAsync(httpContext.User);
+        if (user is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        var sharedKey = await userManager.GetAuthenticatorKeyAsync(user);
+        if (string.IsNullOrWhiteSpace(sharedKey))
+        {
+            var resetResult = await userManager.ResetAuthenticatorKeyAsync(user);
+            if (!resetResult.Succeeded)
+            {
+                return IdentityErrors(resetResult);
+            }
+
+            sharedKey = await userManager.GetAuthenticatorKeyAsync(user);
+            await signInManager.RefreshSignInAsync(user);
+        }
+
+        var issuer = configuration["Platform:MfaIssuer"] ?? "HeatSynQ";
+        var accountName = user.UserName ?? user.Email ?? user.Id.ToString();
+        var authenticatorUri =
+            $"otpauth://totp/{Uri.EscapeDataString(issuer)}:{Uri.EscapeDataString(accountName)}" +
+            $"?secret={Uri.EscapeDataString(sharedKey!)}" +
+            $"&issuer={Uri.EscapeDataString(issuer)}&digits=6";
+        db.AuditEvents.Add(AuditEvent.Create(
+            "platform.mfa.enrollment_started",
+            "User",
+            user.Id.ToString(),
+            user.Id,
+            httpContext.TraceIdentifier,
+            "User started authenticator enrollment",
+            "{}",
+            """{"authenticator":"pending"}""",
+            timeProvider.GetUtcNow()));
+        await db.SaveChangesAsync(cancellationToken);
+
+        return Results.Ok(new
+        {
+            SharedKey = sharedKey,
+            AuthenticatorUri = authenticatorUri
+        });
+    }
+
+    private static async Task<IResult> EnableAuthenticatorAsync(
+        EnableAuthenticatorRequest request,
+        HttpContext httpContext,
+        PlatformDbContext db,
+        UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
+        TimeProvider timeProvider,
+        CancellationToken cancellationToken)
+    {
+        var user = await userManager.GetUserAsync(httpContext.User);
+        if (user is null)
+        {
+            return Results.Unauthorized();
+        }
+
+        var code = NormalizeAuthenticatorCode(request.Code);
+        var isValid = await userManager.VerifyTwoFactorTokenAsync(
+            user,
+            TokenOptions.DefaultAuthenticatorProvider,
+            code);
+        if (!isValid)
+        {
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["code"] = ["The authenticator code is invalid."]
+            });
+        }
+
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var enableResult = await userManager.SetTwoFactorEnabledAsync(user, true);
+        if (!enableResult.Succeeded)
+        {
+            return IdentityErrors(enableResult);
+        }
+
+        var recoveryCodes = (await userManager.GenerateNewTwoFactorRecoveryCodesAsync(user, 10))
+            ?.ToArray() ?? [];
+        await signInManager.RefreshSignInAsync(user);
+        db.AuditEvents.Add(AuditEvent.Create(
+            "platform.mfa.enabled",
+            "User",
+            user.Id.ToString(),
+            user.Id,
+            httpContext.TraceIdentifier,
+            "User enabled authenticator MFA",
+            """{"twoFactorEnabled":false}""",
+            """{"twoFactorEnabled":true}""",
+            timeProvider.GetUtcNow()));
+        await db.SaveChangesAsync(cancellationToken);
+
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
+
+        return Results.Ok(new { RecoveryCodes = recoveryCodes });
+    }
+
+    private static string NormalizeAuthenticatorCode(string? code) =>
+        (code ?? string.Empty).Replace(" ", string.Empty).Replace("-", string.Empty);
 
     private static async Task<IResult> LogoutAsync(SignInManager<ApplicationUser> signInManager)
     {
@@ -622,6 +781,13 @@ public static class PlatformIdentityEndpoints
         string? Username,
         string? Password,
         bool RememberMe);
+
+    private sealed record TwoFactorLoginRequest(
+        string? Code,
+        bool RememberMe,
+        bool RememberClient);
+
+    private sealed record EnableAuthenticatorRequest(string? Code);
 
     private sealed record CreateUserRequest(
         string? Username,
