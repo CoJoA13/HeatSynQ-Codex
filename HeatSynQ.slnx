@@ -14,6 +14,9 @@
   <Folder Name="/src/Web/">
     <Project Path="src/Web/HeatSynQ.Web.csproj" />
   </Folder>
+  <Folder Name="/src/Worker/">
+    <Project Path="src/Worker/HeatSynQ.Worker.csproj" />
+  </Folder>
   <Folder Name="/tests/" />
   <Folder Name="/tests/Modules/" />
   <Folder Name="/tests/Modules/Platform/" />
@@ -22,5 +25,8 @@
   </Folder>
   <Folder Name="/tests/Modules/Platform/Infrastructure.Tests/">
     <Project Path="tests/Modules/Platform/Infrastructure.Tests/HeatSynQ.Platform.Infrastructure.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tests/Web.Tests/">
+    <Project Path="tests/Web.Tests/HeatSynQ.Web.Tests.csproj" />
   </Folder>
 </Solution>

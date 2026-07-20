@@ -1,0 +1,46 @@
+@page "/login/2fa"
+@attribute [AllowAnonymous]
+@layout AnonymousLayout
+
+<PageTitle>Two-factor authentication | HeatSynQ</PageTitle>
+<main class="login-card">
+    <div class="login-brand"><span class="brand-mark">H</span><span>HeatSynQ</span></div>
+    <div class="eyebrow">SECURITY CHECK</div>
+    <h1>Authenticator code</h1>
+    <p>Enter the six-digit code from your authenticator app.</p>
+    @if (Error == "invalid")
+    {
+        <div class="login-error" role="alert">The authenticator code is invalid.</div>
+    }
+    <form method="post" action="/account/login/2fa">
+        <AntiforgeryToken />
+        <input type="hidden" name="RememberMe" value="@(RememberMe ? "true" : "false")" />
+        <label>
+            <span>Authentication code</span>
+            <input name="Code"
+                   inputmode="numeric"
+                   autocomplete="one-time-code"
+                   maxlength="8"
+                   required
+                   autofocus />
+        </label>
+        <label class="remember">
+            <input type="checkbox" name="RememberClient" value="true" />
+            Trust this browser
+        </label>
+        <button type="submit" class="primary-action">Verify</button>
+    </form>
+    <small>
+        <a href="/login/2fa/recovery?rememberMe=@RememberMe.ToString().ToLowerInvariant()">
+            Use a recovery code if your authenticator is unavailable.
+        </a>
+    </small>
+</main>
+
+@code {
+    [SupplyParameterFromQuery(Name = "error")]
+    public string? Error { get; set; }
+
+    [SupplyParameterFromQuery(Name = "rememberMe")]
+    public bool RememberMe { get; set; }
+}

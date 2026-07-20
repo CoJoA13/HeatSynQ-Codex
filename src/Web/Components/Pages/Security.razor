@@ -1,0 +1,102 @@
+@page "/account/security"
+@using HeatSynQ.Platform.Infrastructure.Persistence
+@using Microsoft.AspNetCore.Identity
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@inject IServiceScopeFactory ScopeFactory
+
+<PageTitle>Account security | HeatSynQ</PageTitle>
+<div class="page-heading">
+    <div>
+        <div class="eyebrow">ACCOUNT / SECURITY</div>
+        <h1>Account security</h1>
+        <p>Manage your password, authenticator-app MFA, and recovery access.</p>
+    </div>
+</div>
+
+<section class="panel security-panel">
+    <div class="security-status">
+        <div>
+            <h2>Password</h2>
+            <p>Change your password using your current password.</p>
+        </div>
+        <a class="primary-action" href="/account/password">Change password</a>
+    </div>
+</section>
+
+<section class="panel security-panel">
+    @if (MfaEnabled)
+    {
+        <div class="security-status enabled">
+            <span class="status-ok">✓</span>
+            <div>
+                <h2>Authenticator enabled</h2>
+                <p>@RecoveryCodesRemaining recovery codes remaining</p>
+            </div>
+        </div>
+        <form action="/api/v1/auth/mfa/disable" method="post" data-api-form="disable-mfa">
+            <div class="form-error" role="alert" hidden></div>
+            <label>
+                <span>Current password</span>
+                <input type="password" name="CurrentPassword" autocomplete="current-password" required />
+            </label>
+            <button type="submit" class="primary-action">Disable authenticator MFA</button>
+        </form>
+    }
+    else
+    {
+        <div class="security-status">
+            <div>
+                <h2>Authenticator not enabled</h2>
+                <p>Add a time-based code from Microsoft Authenticator, Google Authenticator, 1Password, or another TOTP app.</p>
+            </div>
+            <button type="button" class="primary-action" data-mfa-begin>Set up authenticator</button>
+        </div>
+        <section class="mfa-setup" data-mfa-setup hidden>
+            <h3>1. Add HeatSynQ to your authenticator</h3>
+            <p>Enter this setup key manually:</p>
+            <code data-mfa-key></code>
+            <a data-mfa-uri href="">Open authenticator link</a>
+            <h3>2. Verify the six-digit code</h3>
+            <form action="/api/v1/auth/mfa/authenticator/enable"
+                  method="post"
+                  data-api-form="enable-mfa">
+                <div class="form-error" role="alert" hidden></div>
+                <label>
+                    <span>Authentication code</span>
+                    <input name="Code"
+                           inputmode="numeric"
+                           autocomplete="one-time-code"
+                           maxlength="8"
+                           required />
+                </label>
+                <button type="submit" class="primary-action">Enable MFA</button>
+            </form>
+        </section>
+        <section class="recovery-codes" data-recovery-codes hidden>
+            <h3>Save your recovery codes now</h3>
+            <p>Each code can be used once. Store them somewhere protected.</p>
+            <ol></ol>
+            <button type="button" class="primary-action" data-page-reload>Done</button>
+        </section>
+    }
+</section>
+
+@code {
+    private bool MfaEnabled { get; set; }
+    private int RecoveryCodesRemaining { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authenticationState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        await using var scope = ScopeFactory.CreateAsyncScope();
+        var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var user = await userManager.GetUserAsync(authenticationState.User);
+        if (user is null)
+        {
+            return;
+        }
+
+        MfaEnabled = user.TwoFactorEnabled;
+        RecoveryCodesRemaining = await userManager.CountRecoveryCodesAsync(user);
+    }
+}
