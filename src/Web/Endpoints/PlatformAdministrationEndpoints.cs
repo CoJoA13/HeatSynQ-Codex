@@ -16,6 +16,8 @@ namespace HeatSynQ.Web.Endpoints;
 public static class PlatformAdministrationEndpoints
 {
     private const string SessionIdClaim = "heatsynq:session_id";
+    private static readonly Guid FacilitySettingsId =
+        Guid.Parse("c815f597-fde8-4d23-9780-53b586a0ed86");
     private static readonly SemaphoreSlim[] WorkSubmissionLocks =
         Enumerable.Range(0, 256).Select(_ => new SemaphoreSlim(1, 1)).ToArray();
 
@@ -227,7 +229,8 @@ public static class PlatformAdministrationEndpoints
                 error = "This record changed after it was loaded. Refresh and retry your change."
             });
         var before = record is null ? "{}" : JsonSerializer.Serialize(record);
-        record ??= new FacilitySettings { Id = Guid.NewGuid() };
+        var isNew = record is null;
+        record ??= new FacilitySettings { Id = FacilitySettingsId };
         if (db.Entry(record).State == EntityState.Detached) db.FacilitySettings.Add(record);
         record.CompanyName = request.CompanyName!.Trim();
         record.FacilityName = request.FacilityName!.Trim();
@@ -239,9 +242,28 @@ public static class PlatformAdministrationEndpoints
             "platform.settings.updated", "FacilitySettings", record.Id.ToString(),
             actor.Id, AuditSessionId(httpContext), request.Reason!.Trim(), before,
             JsonSerializer.Serialize(record), timeProvider.GetUtcNow()));
-        await db.SaveChangesAsync(cancellationToken);
+        try
+        {
+            await db.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (
+            isNew && IsFacilitySingletonInsertConflict(exception))
+        {
+            db.ChangeTracker.Clear();
+            return Results.Conflict(new
+            {
+                error = "Facility settings were initialized by another request. Refresh and retry."
+            });
+        }
         return Results.Ok(record);
     }
+
+    private static bool IsFacilitySingletonInsertConflict(Exception exception) =>
+        exception is DbUpdateException ||
+        exception is ArgumentException argumentException &&
+        argumentException.Message.Contains(
+            FacilitySettingsId.ToString(),
+            StringComparison.OrdinalIgnoreCase);
 
     private static Dictionary<string, string[]> ValidateSettings(FacilitySettingsRequest request)
     {
@@ -643,6 +665,12 @@ public static class PlatformAdministrationEndpoints
             {
                 ["work"] = ["An approved message type, JSON payload, and idempotency key are required."]
             });
+        var payloadError = ValidateWorkPayload(request.MessageType, request.Payload);
+        if (payloadError is not null)
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["payload"] = [payloadError]
+            });
         var idempotencyKey = request.IdempotencyKey.Trim();
         var lockIndex = (int)((uint)StringComparer.Ordinal.GetHashCode(idempotencyKey)
             % WorkSubmissionLocks.Length);
@@ -699,6 +727,35 @@ public static class PlatformAdministrationEndpoints
     private static string AuditSessionId(HttpContext httpContext) =>
         httpContext.User.FindFirstValue(SessionIdClaim) ?? httpContext.TraceIdentifier;
 
+    private static string? ValidateWorkPayload(string messageType, JsonElement payload)
+    {
+        try
+        {
+            if (messageType == "platform.notification")
+            {
+                var notification = payload.Deserialize<NotificationWorkPayload>(
+                    JsonSerializerOptions.Web);
+                return notification is null ||
+                       string.IsNullOrWhiteSpace(notification.Recipient) ||
+                       string.IsNullOrWhiteSpace(notification.Subject)
+                    ? "Notification recipient and subject are required."
+                    : null;
+            }
+
+            var print = payload.Deserialize<PrintWorkPayload>(JsonSerializerOptions.Web);
+            return print is null ||
+                   string.IsNullOrWhiteSpace(print.Printer) ||
+                   string.IsNullOrWhiteSpace(print.DocumentPath) ||
+                   print.Copies is < 1 or > 20
+                ? "Printer, document path, and 1-20 copies are required."
+                : null;
+        }
+        catch (JsonException)
+        {
+            return "The payload does not match the selected work type.";
+        }
+    }
+
     private sealed record FacilitySettingsRequest(
         string? CompanyName, string? FacilityName, string? FacilityCode,
         string? TimeZoneId, int DefaultRetentionYears, Guid? Version, string? Reason);
@@ -711,4 +768,12 @@ public static class PlatformAdministrationEndpoints
         string? MessageType,
         JsonElement Payload,
         string? IdempotencyKey);
+    private sealed record NotificationWorkPayload(
+        string? Recipient,
+        string? Subject,
+        string? Body);
+    private sealed record PrintWorkPayload(
+        string? Printer,
+        string? DocumentPath,
+        int Copies);
 }

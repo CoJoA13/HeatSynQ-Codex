@@ -1,5 +1,8 @@
 using System.Net;
 using System.Net.Http.Json;
+using HeatSynQ.Platform.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace HeatSynQ.Web.Tests.Authentication;
 
@@ -114,6 +117,30 @@ public sealed class LoginEndpointTests
         var response = await client.SendAsync(valid);
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Bootstrap_identity_is_locked_after_repeated_password_failures()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAsync(client);
+        for (var attempt = 0; attempt < 5; attempt++)
+        {
+            using var invalid = LoginRequest(
+                "admin",
+                "wrong-password",
+                $"192.0.2.{40 + attempt}");
+            Assert.Equal(
+                HttpStatusCode.Unauthorized,
+                (await client.SendAsync(invalid)).StatusCode);
+        }
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var user = await db.Users.SingleAsync(x => x.UserName == "admin");
+        Assert.True(user.LockoutEnabled);
+        Assert.NotNull(user.LockoutEnd);
     }
 
     private static HttpRequestMessage LoginRequest(

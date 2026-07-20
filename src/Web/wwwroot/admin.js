@@ -60,6 +60,7 @@
             }),
             "update-role": () => ({
                 PermissionKeys: formData.getAll("PermissionKeys"),
+                Version: formData.get("Version"),
                 Reason: formData.get("Reason")
             }),
             "change-user-status": () => ({
@@ -68,6 +69,11 @@
             }),
             "reset-user-password": () => ({
                 TemporaryPassword: formData.get("TemporaryPassword"),
+                Reason: formData.get("Reason")
+            }),
+            "replace-user-roles": () => ({
+                RoleNames: formData.getAll("RoleNames"),
+                Version: formData.get("Version"),
                 Reason: formData.get("Reason")
             }),
             "revoke-user-sessions": () => ({

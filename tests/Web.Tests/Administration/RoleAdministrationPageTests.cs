@@ -40,6 +40,50 @@ public sealed class RoleAdministrationPageTests
         Assert.Contains("name=\"Reason\"", html);
     }
 
+    [Fact]
+    public async Task Role_viewer_does_not_see_mutation_controls()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var administrator = factory.CreateHttpsClient();
+        using var viewer = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(administrator);
+        var create = await administrator.PostAsJsonAsync("/api/v1/platform/users", new
+        {
+            Username = "role.viewer",
+            Email = "role.viewer@example.test",
+            DisplayName = "Role Viewer",
+            Password = "Correct-Horse-Battery-Staple!8",
+            RoleNames = Array.Empty<string>(),
+            Reason = "Read-only role viewer"
+        });
+        var user = await create.Content.ReadFromJsonAsync<CreatedUser>();
+        (await administrator.PostAsJsonAsync(
+            $"/api/v1/platform/users/{user!.Id}/permission-overrides",
+            new
+            {
+                PermissionKey = "platform.roles.view",
+                Effect = "Allow",
+                Reason = "Read-only role review"
+            })).EnsureSuccessStatusCode();
+        (await viewer.PostAsJsonAsync("/api/v1/auth/login", new
+        {
+            Username = "role.viewer",
+            Password = "Correct-Horse-Battery-Staple!8",
+            RememberMe = false
+        })).EnsureSuccessStatusCode();
+        (await viewer.PostAsJsonAsync("/api/v1/auth/password", new
+        {
+            CurrentPassword = "Correct-Horse-Battery-Staple!8",
+            NewPassword = "Replacement-Horse-Battery-Staple!8"
+        })).EnsureSuccessStatusCode();
+
+        var html = await viewer.GetStringAsync("/admin/roles");
+
+        Assert.Contains("Roles &amp; permissions", html);
+        Assert.DoesNotContain("id=\"add-role-dialog\"", html);
+        Assert.DoesNotContain("data-api-form=\"update-role\"", html);
+    }
+
     private static async Task BootstrapAndLoginAsync(HttpClient client)
     {
         (await client.PostAsJsonAsync("/api/v1/platform/bootstrap", new
@@ -60,4 +104,5 @@ public sealed class RoleAdministrationPageTests
     }
 
     private sealed record CreatedRole(Guid Id);
+    private sealed record CreatedUser(Guid Id);
 }

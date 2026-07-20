@@ -316,6 +316,64 @@ public sealed class MfaEndpointTests
             value => value.Contains("expires=", StringComparison.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task Failed_browser_mfa_attempt_preserves_persistent_sign_in_choice()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient(allowAutoRedirect: false);
+        await BootstrapAndLoginAsync(client);
+        (await client.PostAsync("/api/v1/auth/mfa/authenticator", null)).EnsureSuccessStatusCode();
+        var code = await GenerateAuthenticatorCodeAsync(factory.Services, "admin");
+        (await client.PostAsJsonAsync(
+            "/api/v1/auth/mfa/authenticator/enable",
+            new { Code = code })).EnsureSuccessStatusCode();
+        (await client.PostAsync("/api/v1/auth/logout", null)).EnsureSuccessStatusCode();
+        await PostBrowserFormAsync(client, "/login", "/account/login",
+            new Dictionary<string, string>
+            {
+                ["Username"] = "admin",
+                ["Password"] = "Correct-Horse-Battery-Staple!7",
+                ["RememberMe"] = "true"
+            });
+
+        var failed = await PostBrowserFormAsync(
+            client,
+            "/login/2fa?rememberMe=true",
+            "/account/login/2fa",
+            new Dictionary<string, string>
+            {
+                ["Code"] = "000000",
+                ["RememberMe"] = "true"
+            });
+
+        Assert.Equal(
+            "/login/2fa?error=invalid&rememberMe=true",
+            failed.Headers.Location?.OriginalString);
+    }
+
+    [Fact]
+    public async Task Mfa_mutations_preserve_the_authenticated_session_claim()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(client);
+        (await client.PostAsync("/api/v1/auth/mfa/authenticator", null)).EnsureSuccessStatusCode();
+        var code = await GenerateAuthenticatorCodeAsync(factory.Services, "admin");
+        (await client.PostAsJsonAsync(
+            "/api/v1/auth/mfa/authenticator/enable",
+            new { Code = code })).EnsureSuccessStatusCode();
+        (await client.PostAsJsonAsync(
+            "/api/v1/auth/mfa/disable",
+            new { CurrentPassword = "Correct-Horse-Battery-Staple!7" })).EnsureSuccessStatusCode();
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var sessionId = (await db.Sessions.SingleAsync()).Id.ToString();
+        var disabled = await db.AuditEvents.SingleAsync(
+            x => x.Action == "platform.mfa.disabled");
+        Assert.Equal(sessionId, disabled.SessionId);
+    }
+
     private static async Task<string> GenerateAuthenticatorCodeAsync(
         IServiceProvider services,
         string username)

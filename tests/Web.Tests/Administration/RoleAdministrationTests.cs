@@ -63,6 +63,12 @@ public sealed class RoleAdministrationTests
         });
         createResponse.EnsureSuccessStatusCode();
         var created = await createResponse.Content.ReadFromJsonAsync<CreatedRole>();
+        await using var versionScope = factory.Services.CreateAsyncScope();
+        var versionDb = versionScope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var version = await versionDb.Roles
+            .Where(x => x.Id == created!.Id)
+            .Select(x => x.ConcurrencyStamp)
+            .SingleAsync();
 
         var updateResponse = await client.PutAsJsonAsync(
             $"/api/v1/platform/roles/{created!.Id}/permissions",
@@ -73,6 +79,7 @@ public sealed class RoleAdministrationTests
                     "platform.users.view",
                     "platform.audit.view"
                 },
+                Version = version,
                 Reason = "Quality now reviews security audit"
             });
 
@@ -90,6 +97,90 @@ public sealed class RoleAdministrationTests
             x => x.Action == "platform.role.permissions_changed"
                 && x.EntityId == created.Id.ToString()
                 && x.Reason == "Quality now reviews security audit");
+    }
+
+    [Fact]
+    public async Task Stale_role_permission_replacement_is_rejected()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(client);
+        var create = await client.PostAsJsonAsync("/api/v1/platform/roles", new
+        {
+            Name = "Scheduler",
+            Description = "Scheduling access.",
+            PermissionKeys = new[] { "platform.health.view" },
+            Reason = "Create scheduler role"
+        });
+        var role = (await create.Content.ReadFromJsonAsync<CreatedRole>())!;
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var staleVersion = await db.Roles
+            .Where(x => x.Id == role.Id)
+            .Select(x => x.ConcurrencyStamp)
+            .SingleAsync();
+        (await client.PutAsJsonAsync(
+            $"/api/v1/platform/roles/{role.Id}/permissions",
+            new
+            {
+                PermissionKeys = new[] { "platform.users.view" },
+                Version = staleVersion,
+                Reason = "First editor"
+            })).EnsureSuccessStatusCode();
+
+        var stale = await client.PutAsJsonAsync(
+            $"/api/v1/platform/roles/{role.Id}/permissions",
+            new
+            {
+                PermissionKeys = new[] { "platform.audit.view" },
+                Version = staleVersion,
+                Reason = "Stale editor"
+            });
+
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+    }
+
+    [Fact]
+    public async Task Concurrent_role_permission_replacements_return_a_conflict()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(client);
+        var create = await client.PostAsJsonAsync("/api/v1/platform/roles", new
+        {
+            Name = "Concurrent Scheduler",
+            Description = "Concurrent scheduling test.",
+            PermissionKeys = new[] { "platform.health.view" },
+            Reason = "Create concurrency test role"
+        });
+        var role = (await create.Content.ReadFromJsonAsync<CreatedRole>())!;
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var version = await db.Roles
+            .Where(x => x.Id == role.Id)
+            .Select(x => x.ConcurrencyStamp)
+            .SingleAsync();
+
+        var responses = await Task.WhenAll(
+            client.PutAsJsonAsync(
+                $"/api/v1/platform/roles/{role.Id}/permissions",
+                new
+                {
+                    PermissionKeys = new[] { "platform.users.view" },
+                    Version = version,
+                    Reason = "Concurrent editor one"
+                }),
+            client.PutAsJsonAsync(
+                $"/api/v1/platform/roles/{role.Id}/permissions",
+                new
+                {
+                    PermissionKeys = new[] { "platform.audit.view" },
+                    Version = version,
+                    Reason = "Concurrent editor two"
+                }));
+
+        Assert.Contains(responses, x => x.StatusCode == HttpStatusCode.NoContent);
+        Assert.Contains(responses, x => x.StatusCode == HttpStatusCode.Conflict);
     }
 
     [Fact]

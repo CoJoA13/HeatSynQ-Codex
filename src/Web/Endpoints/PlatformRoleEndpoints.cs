@@ -61,6 +61,7 @@ public static class PlatformRoleEndpoints
                 role.Name,
                 role.Description,
                 role.IsSystemRole,
+                Version = role.ConcurrencyStamp,
                 UserCount = userCount,
                 PermissionKeys = permissionKeys
             });
@@ -114,7 +115,21 @@ public static class PlatformRoleEndpoints
                 ["roleId"] = ["System role permissions cannot be changed."]
             });
         }
+        if (string.IsNullOrWhiteSpace(request.Version) ||
+            !string.Equals(
+                request.Version,
+                role.ConcurrencyStamp,
+                StringComparison.Ordinal))
+        {
+            return Results.Conflict(new
+            {
+                error = "This role changed after it was loaded. Refresh and retry."
+            });
+        }
 
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
         var existingGrants = await db.RolePermissions
             .Where(x => x.RoleId == roleId)
             .ToArrayAsync(cancellationToken);
@@ -128,6 +143,7 @@ public static class PlatformRoleEndpoints
             RoleId = roleId,
             PermissionKey = key
         }));
+        role.ConcurrencyStamp = Guid.NewGuid().ToString("N");
         db.AuditEvents.Add(AuditEvent.Create(
             "platform.role.permissions_changed",
             "Role",
@@ -139,6 +155,10 @@ public static class PlatformRoleEndpoints
             JsonSerializer.Serialize(new { PermissionKeys = permissionKeys }),
             DateTimeOffset.UtcNow));
         await db.SaveChangesAsync(cancellationToken);
+        if (transaction is not null)
+        {
+            await transaction.CommitAsync(cancellationToken);
+        }
         return Results.NoContent();
     }
 
@@ -276,5 +296,6 @@ public static class PlatformRoleEndpoints
 
     private sealed record ReplaceRolePermissionsRequest(
         string[]? PermissionKeys,
+        string? Version,
         string? Reason);
 }

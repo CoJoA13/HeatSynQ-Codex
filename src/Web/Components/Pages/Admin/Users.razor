@@ -128,10 +128,21 @@
                                     data-dialog-open="status-@user.Id">
                                 @(user.IsEnabled ? "Disable" : "Restore")
                             </button>
+                            @if (!user.HasSystemRole || CanEditRoles)
+                            {
                             <button class="row-action"
                                     type="button"
                                     data-dialog-open="password-@user.Id">
                                 Reset password
+                            </button>
+                            }
+                            }
+                            @if (CanEditUsers && CanEditRoles)
+                            {
+                            <button class="row-action"
+                                    type="button"
+                                    data-dialog-open="roles-@user.Id">
+                                Edit roles
                             </button>
                             }
                             @if (CanRevokeSessions)
@@ -179,6 +190,8 @@
                                 </div>
                             </form>
                         </dialog>
+                        @if (!user.HasSystemRole || CanEditRoles)
+                        {
                         <dialog id="password-@user.Id" class="admin-dialog compact-dialog">
                             <form action="/api/v1/platform/users/@user.Id/reset-password"
                                   method="post"
@@ -207,6 +220,7 @@
                             </form>
                         </dialog>
                         }
+                        }
                         @if (CanRevokeSessions)
                         {
                         <dialog id="sessions-@user.Id" class="admin-dialog compact-dialog">
@@ -229,6 +243,46 @@
                                 <div class="dialog-actions">
                                     <button type="button" data-dialog-close>Cancel</button>
                                     <button type="submit" class="primary-action">Revoke sessions</button>
+                                </div>
+                            </form>
+                        </dialog>
+                        }
+                        @if (CanEditUsers && CanEditRoles)
+                        {
+                        <dialog id="roles-@user.Id" class="admin-dialog compact-dialog">
+                            <form action="/api/v1/platform/users/@user.Id/roles"
+                                  method="post"
+                                  data-api-form="replace-user-roles"
+                                  data-api-method="PUT">
+                                <div class="dialog-heading">
+                                    <div>
+                                        <div class="eyebrow">ADMINISTRATION / USERS</div>
+                                        <h2>Edit roles for @user.DisplayName</h2>
+                                    </div>
+                                    <button type="button" class="dialog-close" data-dialog-close aria-label="Close">Ã—</button>
+                                </div>
+                                <div class="form-error" role="alert" hidden></div>
+                                <input type="hidden" name="Version" value="@user.Version" />
+                                <fieldset>
+                                    <legend>Role membership</legend>
+                                    @foreach (var role in RoleOptions)
+                                    {
+                                        <label class="choice">
+                                            <input name="RoleNames"
+                                                   type="checkbox"
+                                                   value="@role"
+                                                   checked="@user.Roles.Contains(role)" />
+                                            <span>@role</span>
+                                        </label>
+                                    }
+                                </fieldset>
+                                <label>
+                                    <span>Reason</span>
+                                    <textarea name="Reason" rows="3" required></textarea>
+                                </label>
+                                <div class="dialog-actions">
+                                    <button type="button" data-dialog-close>Cancel</button>
+                                    <button type="submit" class="primary-action">Save roles</button>
                                 </div>
                             </form>
                         </dialog>
@@ -372,7 +426,8 @@
                 x.Id,
                 Username = x.UserName ?? string.Empty,
                 x.DisplayName,
-                x.IsEnabled
+                x.IsEnabled,
+                Version = x.ConcurrencyStamp ?? string.Empty
             })
             .ToArrayAsync();
         var roleMemberships = await (
@@ -384,6 +439,12 @@
         var rolesByUser = roleMemberships
             .GroupBy(x => x.UserId)
             .ToDictionary(x => x.Key, x => x.Select(role => role.RoleName).ToArray());
+        var systemRoleNames = (await db.Roles
+            .AsNoTracking()
+            .Where(x => x.IsSystemRole)
+            .Select(x => x.Name ?? string.Empty)
+            .ToArrayAsync())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var overridesByUser = (await db.UserPermissionOverrides
                 .AsNoTracking()
                 .OrderBy(x => x.PermissionKey)
@@ -417,6 +478,9 @@
                 x.Username,
                 x.DisplayName,
                 x.IsEnabled,
+                x.Version,
+                rolesByUser.GetValueOrDefault(x.Id, [])
+                    .Any(systemRoleNames.Contains),
                 lastSeenByUser.GetValueOrDefault(x.Id),
                 rolesByUser.GetValueOrDefault(x.Id, []),
                 overridesByUser.GetValueOrDefault(x.Id, [])))
@@ -428,6 +492,8 @@
         string Username,
         string DisplayName,
         bool IsEnabled,
+        string Version,
+        bool HasSystemRole,
         DateTimeOffset? LastSeenAt,
         string[] Roles,
         OverrideRow[] Overrides);

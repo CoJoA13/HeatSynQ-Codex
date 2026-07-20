@@ -10,7 +10,7 @@ The first user receives the system `Administrator` role and every Module 1 permi
 
 Open **Administration → Users & sessions** to:
 
-- create an ERP account and assign one or more roles;
+- create an ERP account and assign or later replace one or more roles;
 - issue or reset a temporary password, immediately revoke existing sessions, and
   require the user to replace that password after sign-in;
 - disable or restore an account with a required reason;
@@ -25,6 +25,10 @@ after confirming their password. An enabled authenticator secret is never
 displayed again; replacing it requires disabling MFA and completing a new
 enrollment.
 
+Password resets for accounts holding a protected system role require role-administration
+permission in addition to user-edit permission. This prevents delegated user editors
+from taking control of Administrator accounts.
+
 Never share accounts. Disable a departed user's account; do not attempt to delete it.
 
 ## Roles and permissions
@@ -37,6 +41,8 @@ Open **Administration → Roles & permissions**. Permission precedence is:
 4. default deny.
 
 Use roles for normal access. Use per-user overrides only for documented exceptions, and add an expiration whenever access is temporary.
+Role and membership editors reject stale submissions; refresh the page before
+retrying after a conflict.
 
 ## Facility controls
 
@@ -67,4 +73,6 @@ Treat unhealthy database, storage, or backup results as stop-work conditions for
 
 Managed uploads accept up to 25 MB, calculate SHA-256, and create immutable revisions. Executable and active-content file extensions are rejected. Downloads require the same server-side permission as the metadata view.
 
-Notification and print submissions require an idempotency key. Reusing the same key returns the existing work item instead of creating a duplicate.
+Notification and print submissions require an idempotency key and a payload that
+matches the selected work type. Reusing the same key returns the existing work
+item instead of creating a duplicate.

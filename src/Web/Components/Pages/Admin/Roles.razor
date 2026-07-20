@@ -4,6 +4,8 @@
 @using Microsoft.EntityFrameworkCore
 @attribute [Authorize(Policy = "platform.roles.view")]
 @inject IDbContextFactory<PlatformDbContext> DbContextFactory
+@inject IAuthorizationService AuthorizationService
+@inject AuthenticationStateProvider AuthenticationStateProvider
 
 <PageTitle>Roles &amp; permissions | HeatSynQ</PageTitle>
 <div class="page-heading">
@@ -12,7 +14,10 @@
         <h1>Roles &amp; permissions</h1>
         <p>Role templates provide defaults; user overrides handle documented exceptions.</p>
     </div>
-    <button class="primary-action" type="button" data-dialog-open="add-role-dialog">+ Add role</button>
+    @if (CanEditRoles)
+    {
+        <button class="primary-action" type="button" data-dialog-open="add-role-dialog">+ Add role</button>
+    }
 </div>
 <div class="role-layout">
     <section class="panel role-list">
@@ -30,6 +35,8 @@
     <section class="panel permission-panel">
         @if (SelectedRole is not null)
         {
+            @if (CanEditRoles)
+            {
             <form action="/api/v1/platform/roles/@SelectedRole.Id/permissions"
                   method="post"
                   data-api-form="update-role"
@@ -42,6 +49,7 @@
                     <button type="submit" class="primary-action" disabled="@SelectedRole.IsSystemRole">Save changes</button>
                 </div>
                 <div class="form-error" role="alert" hidden></div>
+                <input type="hidden" name="Version" value="@SelectedRole.Version" />
                 @foreach (var module in PlatformPermissionCatalog.All.GroupBy(x => x.Module))
                 {
                     <h3>@module.Key</h3>
@@ -68,10 +76,26 @@
                     </label>
                 }
             </form>
+            }
+            else
+            {
+                <div class="panel-heading">
+                    <div>
+                        <h2>@SelectedRole.Name</h2>
+                        <p>Read-only permission grants</p>
+                    </div>
+                </div>
+                @foreach (var permissionKey in SelectedRole.PermissionKeys)
+                {
+                    <div class="permission-row"><span><b>@permissionKey</b></span></div>
+                }
+            }
         }
     </section>
 </div>
 
+@if (CanEditRoles)
+{
 <dialog id="add-role-dialog" class="admin-dialog">
     <form action="/api/v1/platform/roles" method="post" data-api-form="create-role">
         <div class="dialog-heading">
@@ -116,6 +140,7 @@
         </div>
     </form>
 </dialog>
+}
 
 @code {
     [SupplyParameterFromQuery(Name = "role")]
@@ -123,9 +148,13 @@
 
     private RoleRow[] RoleRows { get; set; } = [];
     private RoleRow? SelectedRole { get; set; }
+    private bool CanEditRoles { get; set; }
 
     protected override async Task OnParametersSetAsync()
     {
+        var principal = (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User;
+        CanEditRoles = (await AuthorizationService.AuthorizeAsync(
+            principal, "platform.roles.edit")).Succeeded;
         await using var db = await DbContextFactory.CreateDbContextAsync();
         var roles = await db.Roles
             .AsNoTracking()
@@ -151,7 +180,8 @@
                 grants
                     .Where(x => x.RoleId == role.Id)
                     .Select(x => x.PermissionKey)
-                    .ToArray()))
+                    .ToArray(),
+                role.ConcurrencyStamp ?? string.Empty))
             .ToArray();
         SelectedRole = RoleRows.SingleOrDefault(x => x.Id == SelectedRoleId)
             ?? RoleRows.FirstOrDefault();
@@ -163,5 +193,6 @@
         string Description,
         bool IsSystemRole,
         int UserCount,
-        string[] PermissionKeys);
+        string[] PermissionKeys,
+        string Version);
 }

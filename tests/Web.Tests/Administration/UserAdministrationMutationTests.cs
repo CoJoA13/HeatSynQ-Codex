@@ -28,6 +28,7 @@ public sealed class UserAdministrationMutationTests
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
         var createdUser = await db.Users.SingleAsync(x => x.UserName == "quality.lead");
+        Assert.True(createdUser.LockoutEnabled);
         var auditEvent = await db.AuditEvents
             .SingleAsync(x => x.Action == "platform.user.created"
                 && x.EntityId == createdUser.Id.ToString());
@@ -218,6 +219,52 @@ public sealed class UserAdministrationMutationTests
             orderby role.Name
             select role.Name).ToArrayAsync();
         Assert.Equal(["Quality", "Receiving"], roleNames);
+    }
+
+    [Fact]
+    public async Task Administrator_can_replace_roles_for_an_existing_user()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(client);
+        (await client.PostAsJsonAsync("/api/v1/platform/roles", new
+        {
+            Name = "Operator",
+            Description = "Shop-floor operator.",
+            PermissionKeys = Array.Empty<string>(),
+            Reason = "Create operator role"
+        })).EnsureSuccessStatusCode();
+        var create = await client.PostAsJsonAsync("/api/v1/platform/users", new
+        {
+            Username = "future.operator",
+            Email = "future.operator@example.test",
+            DisplayName = "Future Operator",
+            Password = "Correct-Horse-Battery-Staple!8",
+            RoleNames = Array.Empty<string>(),
+            Reason = "Create before assignment"
+        });
+        var user = (await create.Content.ReadFromJsonAsync<CreatedUser>())!;
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var version = await db.Users
+            .Where(x => x.Id == user.Id)
+            .Select(x => x.ConcurrencyStamp)
+            .SingleAsync();
+
+        var response = await client.PutAsJsonAsync(
+            $"/api/v1/platform/users/{user.Id}/roles",
+            new
+            {
+                RoleNames = new[] { "Operator" },
+                Version = version,
+                Reason = "Employee moved to production"
+            });
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Contains(
+            await db.AuditEvents.ToArrayAsync(),
+            x => x.Action == "platform.user.roles_changed" &&
+                 x.EntityId == user.Id.ToString());
     }
 
     private static async Task BootstrapAndLoginAsync(HttpClient client)

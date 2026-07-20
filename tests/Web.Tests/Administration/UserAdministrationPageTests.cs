@@ -54,6 +54,10 @@ public sealed class UserAdministrationPageTests
             html);
         Assert.Contains("data-api-form=\"change-user-status\"", html);
         Assert.Contains(
+            $"action=\"/api/v1/platform/users/{created.Id}/roles\"",
+            html);
+        Assert.Contains("data-api-form=\"replace-user-roles\"", html);
+        Assert.Contains(
             $"action=\"/api/v1/platform/users/{created.Id}/revoke-sessions\"",
             html);
         Assert.Contains("data-api-form=\"revoke-user-sessions\"", html);
@@ -147,6 +151,7 @@ public sealed class UserAdministrationPageTests
 
         Assert.DoesNotContain("id=\"add-user-dialog\"", html);
         Assert.DoesNotContain("data-api-form=\"change-user-status\"", html);
+        Assert.DoesNotContain("data-api-form=\"replace-user-roles\"", html);
         Assert.DoesNotContain("data-api-form=\"revoke-user-sessions\"", html);
         Assert.DoesNotContain("data-api-form=\"create-permission-override\"", html);
         Assert.DoesNotContain("data-api-form=\"revoke-permission-override\"", html);

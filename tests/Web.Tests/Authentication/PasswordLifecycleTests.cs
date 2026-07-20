@@ -91,6 +91,54 @@ public sealed class PasswordLifecycleTests
             (await relogin.GetAsync("/api/v1/auth/me")).StatusCode);
     }
 
+    [Fact]
+    public async Task Delegated_user_editor_cannot_reset_administrator_password()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var administrator = factory.CreateHttpsClient();
+        using var editor = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(administrator);
+        var delegated = await CreateUserAsync(
+            administrator,
+            "user.editor",
+            "Correct-Horse-Battery-Staple!8");
+        (await administrator.PostAsJsonAsync(
+            $"/api/v1/platform/users/{delegated.Id}/permission-overrides",
+            new
+            {
+                PermissionKey = "platform.users.edit",
+                Effect = "Allow",
+                Reason = "Delegated user administration"
+            })).EnsureSuccessStatusCode();
+        (await editor.PostAsJsonAsync("/api/v1/auth/login", new
+        {
+            Username = "user.editor",
+            Password = "Correct-Horse-Battery-Staple!8",
+            RememberMe = false
+        })).EnsureSuccessStatusCode();
+        (await editor.PostAsJsonAsync("/api/v1/auth/password", new
+        {
+            CurrentPassword = "Correct-Horse-Battery-Staple!8",
+            NewPassword = "Replacement-Horse-Battery-Staple!8"
+        })).EnsureSuccessStatusCode();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<PlatformDbContext>();
+        var administratorId = await db.Users
+            .Where(x => x.UserName == "admin")
+            .Select(x => x.Id)
+            .SingleAsync();
+
+        var response = await editor.PostAsJsonAsync(
+            $"/api/v1/platform/users/{administratorId}/reset-password",
+            new
+            {
+                TemporaryPassword = "Compromised-Horse-Battery!8",
+                Reason = "Attempted escalation"
+            });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     private static async Task BootstrapAndLoginAsync(HttpClient client)
     {
         (await client.PostAsJsonAsync("/api/v1/platform/bootstrap", new

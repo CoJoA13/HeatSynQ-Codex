@@ -94,6 +94,13 @@ public static class PlatformIdentityEndpoints
                 .AddRequirements(new PermissionRequirement("platform.users.edit"))
                 .Build());
 
+        endpoints.MapPut("/api/v1/platform/users/{userId:guid}/roles", ReplaceUserRolesAsync)
+            .RequireAuthorization(new AuthorizationPolicyBuilder()
+                .AddRequirements(
+                    new PermissionRequirement("platform.users.edit"),
+                    new PermissionRequirement("platform.roles.edit"))
+                .Build());
+
         endpoints.MapPost("/api/v1/platform/users/{userId:guid}/revoke-sessions", RevokeUserSessionsAsync)
             .RequireAuthorization(new AuthorizationPolicyBuilder()
                 .AddRequirements(new PermissionRequirement("platform.sessions.revoke"))
@@ -154,11 +161,85 @@ public static class PlatformIdentityEndpoints
                 Username = user.UserName,
                 user.DisplayName,
                 user.IsEnabled,
+                Version = user.ConcurrencyStamp,
                 Roles = await userManager.GetRolesAsync(user)
             });
         }
 
         return Results.Ok(response);
+    }
+
+    private static async Task<IResult> ReplaceUserRolesAsync(
+        Guid userId,
+        ReplaceUserRolesRequest request,
+        HttpContext httpContext,
+        PlatformDbContext db,
+        UserManager<ApplicationUser> userManager,
+        RoleManager<ApplicationRole> roleManager,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.Reason))
+            return Results.ValidationProblem(new Dictionary<string, string[]>
+            {
+                ["reason"] = ["A reason is required for administrative changes."]
+            });
+        var actor = await userManager.GetUserAsync(httpContext.User);
+        if (actor is null) return Results.Unauthorized();
+        var user = await userManager.FindByIdAsync(userId.ToString());
+        if (user is null) return Results.NotFound();
+        if (string.IsNullOrWhiteSpace(request.Version) ||
+            !string.Equals(request.Version, user.ConcurrencyStamp, StringComparison.Ordinal))
+            return Results.Conflict(new
+            {
+                error = "This user changed after it was loaded. Refresh and retry."
+            });
+        var roleNames = (request.RoleNames ?? [])
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        foreach (var roleName in roleNames)
+        {
+            if (!await roleManager.RoleExistsAsync(roleName))
+                return Results.ValidationProblem(new Dictionary<string, string[]>
+                {
+                    ["roleNames"] = [$"Unknown role: {roleName}"]
+                });
+        }
+        var existing = (await userManager.GetRolesAsync(user))
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        await using var transaction = db.Database.IsRelational()
+            ? await db.Database.BeginTransactionAsync(cancellationToken)
+            : null;
+        var remove = existing.Except(roleNames, StringComparer.OrdinalIgnoreCase).ToArray();
+        var add = roleNames.Except(existing, StringComparer.OrdinalIgnoreCase).ToArray();
+        if (remove.Length > 0)
+        {
+            var result = await userManager.RemoveFromRolesAsync(user, remove);
+            if (!result.Succeeded) return IdentityErrors(result);
+        }
+        if (add.Length > 0)
+        {
+            var result = await userManager.AddToRolesAsync(user, add);
+            if (!result.Succeeded) return IdentityErrors(result);
+        }
+        var stampResult = await userManager.UpdateSecurityStampAsync(user);
+        if (!stampResult.Succeeded) return IdentityErrors(stampResult);
+        db.AuditEvents.Add(AuditEvent.Create(
+            "platform.user.roles_changed",
+            "User",
+            user.Id.ToString(),
+            actor.Id,
+            AuditSessionId(httpContext),
+            request.Reason.Trim(),
+            JsonSerializer.Serialize(new { RoleNames = existing }),
+            JsonSerializer.Serialize(new { RoleNames = roleNames }),
+            DateTimeOffset.UtcNow));
+        await db.SaveChangesAsync(cancellationToken);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
+        return Results.NoContent();
     }
 
     private static async Task<IResult> CreateUserAsync(
@@ -654,7 +735,10 @@ public static class PlatformIdentityEndpoints
                 user.MustChangePassword ? "/account/password" : "/");
         }
 
-        return Results.LocalRedirect("/login/2fa?error=invalid");
+        return Results.LocalRedirect(
+            rememberMe is true
+                ? "/login/2fa?error=invalid&rememberMe=true"
+                : "/login/2fa?error=invalid");
     }
 
     private static async Task<IResult> BrowserRecoveryCodeLoginAsync(
@@ -817,6 +901,7 @@ public static class PlatformIdentityEndpoints
         HttpContext httpContext,
         PlatformDbContext db,
         UserManager<ApplicationUser> userManager,
+        IAuthorizationService authorizationService,
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
@@ -832,6 +917,19 @@ public static class PlatformIdentityEndpoints
         if (actor is null) return Results.Unauthorized();
         var user = await userManager.FindByIdAsync(userId.ToString());
         if (user is null) return Results.NotFound();
+        var hasSystemRole = await (
+            from userRole in db.UserRoles
+            join role in db.Roles on userRole.RoleId equals role.Id
+            where userRole.UserId == user.Id && role.IsSystemRole
+            select role.Id).AnyAsync(cancellationToken);
+        if (hasSystemRole)
+        {
+            var mayAdministerPrivilegedUsers = await authorizationService.AuthorizeAsync(
+                httpContext.User,
+                resource: null,
+                "platform.roles.edit");
+            if (!mayAdministerPrivilegedUsers.Succeeded) return Results.Forbid();
+        }
         await using var transaction = db.Database.IsRelational()
             ? await db.Database.BeginTransactionAsync(cancellationToken)
             : null;
@@ -923,7 +1021,7 @@ public static class PlatformIdentityEndpoints
             }
 
             sharedKey = await userManager.GetAuthenticatorKeyAsync(user);
-            await signInManager.RefreshSignInAsync(user);
+            await RefreshSignInPreservingSessionAsync(user, httpContext, signInManager);
         }
 
         var issuer = configuration["Platform:MfaIssuer"] ?? "HeatSynQ";
@@ -1007,7 +1105,7 @@ public static class PlatformIdentityEndpoints
 
         var recoveryCodes = (await userManager.GenerateNewTwoFactorRecoveryCodesAsync(user, 10))
             ?.ToArray() ?? [];
-        await signInManager.RefreshSignInAsync(user);
+        await RefreshSignInPreservingSessionAsync(user, httpContext, signInManager);
         db.AuditEvents.Add(AuditEvent.Create(
             "platform.mfa.enabled",
             "User",
@@ -1074,7 +1172,7 @@ public static class PlatformIdentityEndpoints
         }
 
         await userManager.GenerateNewTwoFactorRecoveryCodesAsync(user, 0);
-        await signInManager.RefreshSignInAsync(user);
+        await RefreshSignInPreservingSessionAsync(user, httpContext, signInManager);
         db.AuditEvents.Add(AuditEvent.Create(
             "platform.mfa.disabled",
             "User",
@@ -1449,6 +1547,11 @@ public static class PlatformIdentityEndpoints
 
     private sealed record ResetUserPasswordRequest(
         string? TemporaryPassword,
+        string? Reason);
+
+    private sealed record ReplaceUserRolesRequest(
+        string[]? RoleNames,
+        string? Version,
         string? Reason);
 
     private sealed record CreateUserRequest(

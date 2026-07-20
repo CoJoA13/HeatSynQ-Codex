@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 
 namespace HeatSynQ.Web.Tests.Administration;
 
@@ -98,6 +99,34 @@ public sealed class PlatformAdministrationTests
     }
 
     [Fact]
+    public async Task Concurrent_initial_settings_updates_leave_one_readable_record()
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(client);
+        var requests = Enumerable.Range(1, 2).Select(index =>
+            client.PutAsJsonAsync("/api/v1/platform/settings", new
+            {
+                CompanyName = $"HeatSynQ {index}",
+                FacilityName = "Main",
+                FacilityCode = "MAIN",
+                TimeZoneId = "America/Chicago",
+                DefaultRetentionYears = 10,
+                Reason = $"Concurrent setup {index}"
+            }));
+
+        var responses = await Task.WhenAll(requests);
+        var read = await client.GetAsync("/api/v1/platform/settings");
+
+        Assert.All(
+            responses,
+            response => Assert.Contains(
+                response.StatusCode,
+                new[] { HttpStatusCode.OK, HttpStatusCode.Conflict }));
+        Assert.Equal(HttpStatusCode.OK, read.StatusCode);
+    }
+
+    [Fact]
     public async Task Queue_submission_is_idempotent_for_notifications_and_print_jobs()
     {
         await using var factory = new PlatformWebApplicationFactory();
@@ -125,6 +154,28 @@ public sealed class PlatformAdministrationTests
         Assert.Equal(first!.Id, second!.Id);
         var queue = await client.GetFromJsonAsync<QueuedWork[]>("/api/v1/platform/work");
         Assert.Single(queue!);
+    }
+
+    [Theory]
+    [InlineData("platform.notification", """{"subject":"Missing recipient"}""")]
+    [InlineData("platform.print", """{"printer":"Shipping","documentPath":"","copies":0}""")]
+    public async Task Queue_rejects_malformed_approved_payloads(
+        string messageType,
+        string payload)
+    {
+        await using var factory = new PlatformWebApplicationFactory();
+        using var client = factory.CreateHttpsClient();
+        await BootstrapAndLoginAsync(client);
+        using var document = JsonDocument.Parse(payload);
+
+        var response = await client.PostAsJsonAsync("/api/v1/platform/work", new
+        {
+            MessageType = messageType,
+            Payload = document.RootElement,
+            IdempotencyKey = $"invalid-{Guid.NewGuid():N}"
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
     private static async Task BootstrapAndLoginAsync(HttpClient client)
