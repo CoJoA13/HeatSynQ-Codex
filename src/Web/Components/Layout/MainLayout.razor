@@ -4,8 +4,22 @@
     <div class="sidebar"><NavMenu /></div>
     <main>
         <div class="top-row">
-            <div class="global-search"><span aria-hidden="true">⌕</span><input aria-label="Global search" placeholder="Search jobs, loads, POs, parts, heats, serials, or customers…" /></div>
-            <div class="top-actions"><button class="icon-button" title="Notifications" aria-label="Notifications">●</button><span class="user-chip">Platform Admin <span aria-hidden="true">⌄</span></span></div>
+            <div class="global-search">
+                <span aria-hidden="true">&#8981;</span>
+                <input aria-label="Global search" placeholder="Search jobs, loads, POs, parts, heats, serials, or customers..." />
+            </div>
+            <div class="top-actions">
+                <button class="icon-button" title="Notifications" aria-label="Notifications">&#9679;</button>
+                <AuthorizeView>
+                    <Authorized Context="auth">
+                        <a class="user-chip" href="/account/security">@auth.User.Identity?.Name</a>
+                        <form action="/account/logout" method="post">
+                            <AntiforgeryToken />
+                            <button type="submit" class="icon-button">Sign out</button>
+                        </form>
+                    </Authorized>
+                </AuthorizeView>
+            </div>
         </div>
         <article class="content">@Body</article>
     </main>
@@ -13,5 +27,5 @@
 
 <div id="blazor-error-ui" data-nosnippet>
     An unexpected error occurred. <a href="." class="reload">Reload</a>
-    <span class="dismiss">🗙</span>
+    <span class="dismiss">&#10006;</span>
 </div>

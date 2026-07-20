@@ -1,34 +1,198 @@
 @page "/admin/roles"
-<PageTitle>Roles & permissions | HeatSynQ</PageTitle>
+@using HeatSynQ.Platform.Domain.Security
+@using HeatSynQ.Platform.Infrastructure.Persistence
+@using Microsoft.EntityFrameworkCore
+@attribute [Authorize(Policy = "platform.roles.view")]
+@inject IDbContextFactory<PlatformDbContext> DbContextFactory
+@inject IAuthorizationService AuthorizationService
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Roles &amp; permissions | HeatSynQ</PageTitle>
 <div class="page-heading">
-    <div><div class="eyebrow">ADMINISTRATION / SECURITY</div><h1>Roles &amp; permissions</h1><p>Role templates provide defaults; user overrides handle documented exceptions.</p></div>
-    <button class="primary-action">+ Add role</button>
+    <div>
+        <div class="eyebrow">ADMINISTRATION / SECURITY</div>
+        <h1>Roles &amp; permissions</h1>
+        <p>Role templates provide defaults; user overrides handle documented exceptions.</p>
+    </div>
+    @if (CanEditRoles)
+    {
+        <button class="primary-action" type="button" data-dialog-open="add-role-dialog">+ Add role</button>
+    }
 </div>
 <div class="role-layout">
     <section class="panel role-list">
         <h2>Role templates</h2>
-        <button class="role selected"><b>Administrator</b><small>All platform permissions</small></button>
-        @foreach (var role in OtherRoles) { <button class="role"><b>@role</b><small>0 users · Future module</small></button> }
+        @foreach (var role in RoleRows)
+        {
+            <a class="role @(SelectedRole?.Id == role.Id ? "selected" : null)"
+               href="/admin/roles?role=@role.Id">
+                <b>@role.Name</b>
+                <small>@role.Description</small>
+                <small>@role.UserCount user@(role.UserCount == 1 ? null : "s") · @role.PermissionKeys.Length grants</small>
+            </a>
+        }
     </section>
     <section class="panel permission-panel">
-        <div class="panel-heading"><div><h2>Administrator</h2><p>System role · changes require a reason</p></div><button class="primary-action">Save changes</button></div>
-        <h3>Platform &amp; Administration</h3>
-        @foreach (var permission in Permissions)
+        @if (SelectedRole is not null)
         {
-            <label class="permission-row"><input type="checkbox" checked /><span><b>@permission.Key</b><small>@permission.Description</small></span></label>
+            @if (CanEditRoles)
+            {
+            <form action="/api/v1/platform/roles/@SelectedRole.Id/permissions"
+                  method="post"
+                  data-api-form="update-role"
+                  data-api-method="PUT">
+                <div class="panel-heading">
+                    <div>
+                        <h2>@SelectedRole.Name</h2>
+                        <p>@(SelectedRole.IsSystemRole ? "System role" : "Custom role") · changes require a reason</p>
+                    </div>
+                    <button type="submit" class="primary-action" disabled="@SelectedRole.IsSystemRole">Save changes</button>
+                </div>
+                <div class="form-error" role="alert" hidden></div>
+                <input type="hidden" name="Version" value="@SelectedRole.Version" />
+                @foreach (var module in PlatformPermissionCatalog.All.GroupBy(x => x.Module))
+                {
+                    <h3>@module.Key</h3>
+                    @foreach (var permission in module)
+                    {
+                        <label class="permission-row">
+                            <input type="checkbox"
+                                   name="PermissionKeys"
+                                   value="@permission.Key"
+                                   checked="@SelectedRole.PermissionKeys.Contains(permission.Key)"
+                                   disabled="@SelectedRole.IsSystemRole" />
+                            <span>
+                                <b>@permission.Key</b>
+                                <small>@permission.Action — @permission.Description</small>
+                            </span>
+                        </label>
+                    }
+                }
+                @if (!SelectedRole.IsSystemRole)
+                {
+                    <label class="reason-field">
+                        <span>Reason for change</span>
+                        <textarea name="Reason" rows="3" required></textarea>
+                    </label>
+                }
+            </form>
+            }
+            else
+            {
+                <div class="panel-heading">
+                    <div>
+                        <h2>@SelectedRole.Name</h2>
+                        <p>Read-only permission grants</p>
+                    </div>
+                </div>
+                @foreach (var permissionKey in SelectedRole.PermissionKeys)
+                {
+                    <div class="permission-row"><span><b>@permissionKey</b></span></div>
+                }
+            }
         }
     </section>
 </div>
+
+@if (CanEditRoles)
+{
+<dialog id="add-role-dialog" class="admin-dialog">
+    <form action="/api/v1/platform/roles" method="post" data-api-form="create-role">
+        <div class="dialog-heading">
+            <div>
+                <div class="eyebrow">ADMINISTRATION / ROLES</div>
+                <h2>Add role</h2>
+            </div>
+            <button type="button" class="dialog-close" data-dialog-close aria-label="Close">×</button>
+        </div>
+        <div class="form-error" role="alert" hidden></div>
+        <div class="form-grid">
+            <label>
+                <span>Name</span>
+                <input name="Name" required />
+            </label>
+            <label>
+                <span>Description</span>
+                <input name="Description" required />
+            </label>
+        </div>
+        <fieldset>
+            <legend>Permission grants</legend>
+            @foreach (var permission in PlatformPermissionCatalog.All)
+            {
+                <label class="permission-row">
+                    <input type="checkbox" name="PermissionKeys" value="@permission.Key" />
+                    <span>
+                        <b>@permission.Key</b>
+                        <small>@permission.Action — @permission.Description</small>
+                    </span>
+                </label>
+            }
+        </fieldset>
+        <label>
+            <span>Reason</span>
+            <textarea name="Reason" rows="3" required
+                      placeholder="Why is this role being created?"></textarea>
+        </label>
+        <div class="dialog-actions">
+            <button type="button" data-dialog-close>Cancel</button>
+            <button type="submit" class="primary-action">Create role</button>
+        </div>
+    </form>
+</dialog>
+}
+
 @code {
-    private static readonly string[] OtherRoles = ["Sales", "Receiving", "Operator", "Quality", "Shipping", "Billing"];
-    private static readonly (string Key, string Description)[] Permissions =
-    [
-        ("platform.users.view", "View user accounts and active sessions"),
-        ("platform.users.edit", "Create, update, disable, and restore accounts"),
-        ("platform.sessions.revoke", "Revoke another user's active sessions"),
-        ("platform.roles.edit", "Maintain roles and their permission grants"),
-        ("platform.permissions.override", "Create temporary or permanent user overrides"),
-        ("platform.audit.view", "Search and export security audit history"),
-        ("platform.settings.edit", "Change company, facility, and system settings")
-    ];
+    [SupplyParameterFromQuery(Name = "role")]
+    public Guid? SelectedRoleId { get; set; }
+
+    private RoleRow[] RoleRows { get; set; } = [];
+    private RoleRow? SelectedRole { get; set; }
+    private bool CanEditRoles { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var principal = (await AuthenticationStateProvider.GetAuthenticationStateAsync()).User;
+        CanEditRoles = (await AuthorizationService.AuthorizeAsync(
+            principal, "platform.roles.edit")).Succeeded;
+        await using var db = await DbContextFactory.CreateDbContextAsync();
+        var roles = await db.Roles
+            .AsNoTracking()
+            .OrderByDescending(x => x.IsSystemRole)
+            .ThenBy(x => x.Name)
+            .ToArrayAsync();
+        var grants = await db.RolePermissions
+            .AsNoTracking()
+            .OrderBy(x => x.PermissionKey)
+            .ToArrayAsync();
+        var userCounts = await db.UserRoles
+            .AsNoTracking()
+            .GroupBy(x => x.RoleId)
+            .Select(x => new { RoleId = x.Key, Count = x.Count() })
+            .ToDictionaryAsync(x => x.RoleId, x => x.Count);
+
+        RoleRows = roles.Select(role => new RoleRow(
+                role.Id,
+                role.Name ?? string.Empty,
+                role.Description,
+                role.IsSystemRole,
+                userCounts.GetValueOrDefault(role.Id),
+                grants
+                    .Where(x => x.RoleId == role.Id)
+                    .Select(x => x.PermissionKey)
+                    .ToArray(),
+                role.ConcurrencyStamp ?? string.Empty))
+            .ToArray();
+        SelectedRole = RoleRows.SingleOrDefault(x => x.Id == SelectedRoleId)
+            ?? RoleRows.FirstOrDefault();
+    }
+
+    private sealed record RoleRow(
+        Guid Id,
+        string Name,
+        string Description,
+        bool IsSystemRole,
+        int UserCount,
+        string[] PermissionKeys,
+        string Version);
 }

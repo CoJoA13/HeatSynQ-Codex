@@ -44,3 +44,44 @@ jobs:
           name: test-results
           path: "**/TestResults/*.trx"
           if-no-files-found: ignore
+
+  postgresql-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: heatsynq
+          POSTGRES_PASSWORD: acceptance_password
+          POSTGRES_DB: heatsynq_acceptance
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U heatsynq -d heatsynq_acceptance"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      HEATSYNQ_TEST_POSTGRES: Host=localhost;Port=5432;Database=heatsynq_acceptance;Username=heatsynq;Password=acceptance_password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: |
+          dotnet tool restore
+          dotnet restore HeatSynQ.slnx --configfile NuGet.Config
+
+      - name: Apply migrations
+        env:
+          ConnectionStrings__Platform: ${{ env.HEATSYNQ_TEST_POSTGRES }}
+        run: dotnet ef database update --project src/Modules/Platform/Infrastructure --startup-project src/Web
+
+      - name: Run PostgreSQL acceptance
+        run: dotnet test tests/Web.Tests/HeatSynQ.Web.Tests.csproj --no-restore --filter FullyQualifiedName~PostgreSqlAcceptanceTests
